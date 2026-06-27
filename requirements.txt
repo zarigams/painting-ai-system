@@ -26,7 +26,6 @@ Pillow>=10.0.0
 # Phase2以降（必要になったら追加）
 # ─────────────────────────────────────
 # pytesseract       # OCR（図面テキスト抽出）
-# pdf2image         # PDF→画像変換
-# opencv-python     # 画像前処理
-# SpeechRecognition # 音声認識ラッパー
-# ollama            # ローカルLLM（Phase5）
+pymupdf>=1.24.0    # PDF→画像変換（図面読み込み）
+# pdf2image         # PDF→画像変換（poppler依存のため不使用）
+# opencv-python     # 画像前処

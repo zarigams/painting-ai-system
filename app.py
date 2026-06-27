@@ -172,6 +172,7 @@ def init_session():
         "sales_rep": "",
         "company_name": "",
         "template_id": "standard",
+        "drawing_data": {},
         "api_key": "",
     }
     for k, v in defaults.items():
@@ -371,6 +372,57 @@ if st.session_state.step == "input":
         with c4:
             st.session_state.sales_rep    = st.text_input("担当者",   st.session_state.sales_rep,    placeholder="鈴木")
 
+        # ── 図面PDFアップロード ──────────────────
+        st.markdown("**図面PDF**（間取り図・立面図など）")
+        uploaded_pdf = st.file_uploader(
+            "図面PDFをアップロード（任意）",
+            type=["pdf"],
+            help="建築図面があれば面積・階数・構造を自動読み取りします",
+            key="pdf_uploader",
+        )
+        if uploaded_pdf is not None:
+            pdf_bytes = uploaded_pdf.read()
+            col_pdf1, col_pdf2 = st.columns([2, 1])
+            with col_pdf1:
+                st.info(f"📄 {uploaded_pdf.name}（{len(pdf_bytes)//1024} KB）")
+            with col_pdf2:
+                analyze_pdf_btn = st.button(
+                    "🔍 図面を解析",
+                    use_container_width=True,
+                    key="analyze_pdf_btn",
+                )
+            if analyze_pdf_btn:
+                with st.spinner("図面をAIが解析中...（30秒ほどかかります）"):
+                    try:
+                        from core.drawing_analyzer import DrawingAnalyzer
+                        da = DrawingAnalyzer(api_key=get_api_key())
+                        result = da.analyze(pdf_bytes)
+                        st.session_state.drawing_data = result
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"図面解析エラー: {e}")
+
+        # 図面解析結果の表示
+        drawing = st.session_state.drawing_data
+        if drawing and not drawing.get("error") and not drawing.get("parse_error"):
+            confidence_icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(
+                drawing.get("confidence", ""), "⚪"
+            )
+            st.success(
+                f"{confidence_icon} 図面解析完了｜"
+                f"{drawing.get('building_type','')}"
+                f"　{drawing.get('structure','')}"
+                f"　{drawing.get('floors','')}階"
+                f"　外壁{drawing.get('exterior_wall_area','?')}㎡"
+                f"　屋根{drawing.get('roof_area','?')}㎡"
+            )
+            if st.button("🗑️ 図面データをクリア", key="clear_drawing"):
+                st.session_state.drawing_data = {}
+                st.rerun()
+        elif drawing.get("error") or drawing.get("parse_error"):
+            st.warning("図面の解析に失敗しました。再度試すか、テキストで情報を入力してください。")
+
+        # ── 現場写真 ─────────────────────────────
         st.markdown("**現場写真**（10〜30枚推奨）")
         uploaded_files = st.file_uploader(
             "写真をアップロード",
@@ -426,9 +478,17 @@ elif st.session_state.step == "analyzing":
 
     with st.spinner("写真と説明をAIが解析しています（30秒〜1分）..."):
         try:
+            # 図面解析結果があれば説明文の先頭に付加
+            from core.drawing_analyzer import drawing_data_to_text
+            drawing_text = drawing_data_to_text(st.session_state.drawing_data)
+            merged_description = (
+                drawing_text + "\n\n" + st.session_state.description
+                if drawing_text else st.session_state.description
+            )
+
             result = modules["analyzer"].analyze(
                 image_bytes_list=st.session_state.image_bytes_list,
-                description=st.session_state.description,
+                description=merged_description,
             )
             st.session_state.project_data = result
             q_result = modules["questions"].generate_questions(result)
@@ -588,68 +648,4 @@ elif st.session_state.step == "result":
             })
         st.dataframe(pd.DataFrame(df_data), use_container_width=True, hide_index=True)
 
-    confirm_items = estimation.get("confirmation_items", [])
-    if confirm_items:
-        st.markdown("### ⚠️ 要確認事項")
-        for ci in confirm_items:
-            st.warning(ci)
-
-    st.markdown("---")
-    st.markdown("### 📥 見積書出力")
-    out_cols = st.columns(3)
-
-    with out_cols[0]:
-        if st.button("📊 テンプレートExcel出力", type="primary", use_container_width=True):
-            try:
-                modules = load_modules(get_api_key())
-                ci = st.session_state.get("company", {})
-                excel_path = modules["generator"].generate_from_template(
-                    template_id  = st.session_state.get("template_id", "standard"),
-                    estimation   = st.session_state.estimation,
-                    project_data = st.session_state.project_data,
-                    client_name  = st.session_state.client_name,
-                    site_address = st.session_state.site_address,
-                    sales_rep    = st.session_state.sales_rep or ci.get("contact_name", ""),
-                    company_name = st.session_state.company_name or ci.get("company_name", ""),
-                )
-                with open(excel_path, "rb") as f:
-                    st.download_button(
-                        "⬇️ Excelをダウンロード", f.read(),
-                        file_name=Path(excel_path).name,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
-                st.success("✅ テンプレート形式でExcel見積書を作成しました")
-            except Exception as e:
-                st.error(f"Excel出力エラー: {e}")
-
-    with out_cols[1]:
-        if st.button("📄 PDF出力", use_container_width=True):
-            try:
-                modules = load_modules(get_api_key())
-                pdf_path = modules["generator"].generate_pdf(
-                    estimation   = st.session_state.estimation,
-                    project_data = st.session_state.project_data,
-                    client_name  = st.session_state.client_name,
-                    site_address = st.session_state.site_address,
-                    sales_rep    = st.session_state.sales_rep,
-                )
-                with open(pdf_path, "rb") as f:
-                    st.download_button(
-                        "⬇️ PDFをダウンロード", f.read(),
-                        file_name=Path(pdf_path).name,
-                        mime="application/pdf",
-                    )
-                st.success("PDF見積書を作成しました")
-            except Exception as e:
-                st.error(f"PDF出力エラー: {e}")
-
-    with out_cols[2]:
-        if st.button("🔄 新規案件を入力", use_container_width=True):
-            for key in list(st.session_state.keys()):
-                if key not in ("logged_in", "company", "api_key"):
-                    del st.session_state[key]
-            st.rerun()
-
-    with st.expander("🔧 詳細データ（デバッグ用）"):
-        import json as _json
-        st.json(estimation)
+    confirm_items = estimation.get
