@@ -441,13 +441,34 @@ if st.session_state.step == "input":
                 st.caption(f"他 {len(uploaded_files) - 6} 枚")
 
     with col2:
+        st.markdown("**🎤 音声入力**（スマホのマイクで話す）")
+        audio_data = st.audio_input(
+            "録音ボタンを押して話してください",
+            key="voice_input",
+        )
+        if audio_data is not None:
+            if st.button("📝 文字起こしして説明欄に追加", use_container_width=True, key="transcribe_btn"):
+                with st.spinner("文字起こし中...（数秒かかります）"):
+                    try:
+                        from modules.llm_client import LLMClient
+                        llm = LLMClient(api_key=get_api_key())
+                        transcribed = llm.transcribe_audio(audio_data.read())
+                        if st.session_state.description:
+                            st.session_state.description += "\n" + transcribed
+                        else:
+                            st.session_state.description = transcribed
+                        st.success(f"✅ 「{transcribed}」")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"文字起こしエラー: {e}")
+
         st.markdown("**営業担当からの説明**")
         st.session_state.description = st.text_area(
             "施工内容・要望を入力",
             st.session_state.description,
-            height=280,
+            height=200,
             placeholder="例：\n・外壁のみ塗装\n・屋根は塗らない\n・雨樋全部塗る\n・2階建て木造\n・外壁面積は約120㎡くらい",
-            help="音声入力後にテキストをペーストも可能",
+            help="音声入力後に自動でここに追加されます",
         )
 
         st.markdown("**入力チェック**")
@@ -648,4 +669,71 @@ elif st.session_state.step == "result":
             })
         st.dataframe(pd.DataFrame(df_data), use_container_width=True, hide_index=True)
 
-    confirm_items = estimation.get
+    confirm_items = estimation.get("confirmation_items", [])
+    if confirm_items:
+        st.warning("⚠️ 要確認事項")
+        for ci in confirm_items:
+            st.write(f"• {ci}")
+
+    st.markdown("---")
+    st.markdown("### 📥 見積書を出力")
+
+    modules = load_modules(get_api_key())
+    out_cols = st.columns(3)
+
+    with out_cols[0]:
+        if st.button("📊 Excel出力（テンプレート）", type="primary", use_container_width=True):
+            with st.spinner("Excel見積書を作成中..."):
+                try:
+                    company = st.session_state.get("company", {})
+                    xl_path = modules["generator"].generate_from_template(
+                        template_id=st.session_state.template_id,
+                        estimation=st.session_state.estimation,
+                        project_data=st.session_state.project_data,
+                        client_name=st.session_state.client_name,
+                        site_address=st.session_state.site_address,
+                        sales_rep=st.session_state.sales_rep,
+                        company_name=company.get("company_name", st.session_state.company_name),
+                        discount=0,
+                    )
+                    with open(xl_path, "rb") as f:
+                        st.download_button(
+                            "⬇️ Excelをダウンロード", f.read(),
+                            file_name=Path(xl_path).name,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        )
+                    st.success("Excel見積書を作成しました")
+                except Exception as e:
+                    st.error(f"Excel出力エラー: {e}")
+
+    with out_cols[1]:
+        if st.button("📄 PDF出力（旧形式）", use_container_width=True):
+            with st.spinner("PDF見積書を作成中..."):
+                try:
+                    pdf_path = modules["generator"].generate_pdf(
+                        estimation=st.session_state.estimation,
+                        project_data=st.session_state.project_data,
+                        client_name=st.session_state.client_name,
+                        company_name=st.session_state.company_name,
+                        site_address=st.session_state.site_address,
+                    )
+                    with open(pdf_path, "rb") as f:
+                        st.download_button(
+                            "⬇️ PDFをダウンロード", f.read(),
+                            file_name=Path(pdf_path).name,
+                            mime="application/pdf",
+                        )
+                    st.success("PDF見積書を作成しました")
+                except Exception as e:
+                    st.error(f"PDF出力エラー: {e}")
+
+    with out_cols[2]:
+        if st.button("🔄 新規案件を入力", use_container_width=True):
+            for key in list(st.session_state.keys()):
+                if key not in ("logged_in", "company", "api_key"):
+                    del st.session_state[key]
+            st.rerun()
+
+    with st.expander("🔧 詳細データ（デバッグ用）"):
+        import json as _json
+        st.json(estimation)
