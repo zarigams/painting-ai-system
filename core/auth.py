@@ -116,3 +116,36 @@ def add_company(company_id: str, company_name: str, password: str, **kwargs) -> 
     })
     _save_accounts(data)
     return True
+
+
+def show_login_page():
+    """Streamlitログイン画面を表示する"""
+    import streamlit as st
+
+    st.title("🏠 AI塗装積算システム")
+    st.subheader("ログイン")
+
+    with st.form("login_form"):
+        company_id = st.text_input("会社ID", placeholder="例：nikko")
+        password   = st.text_input("パスワード", type="password", placeholder="パスワードを入力")
+        submitted  = st.form_submit_button("ログイン", use_container_width=True, type="primary")
+
+        if submitted:
+            if not company_id or not password:
+                st.error("会社IDとパスワードを入力してください")
+            else:
+                company = login(company_id, password)
+                if company:
+                    st.session_state.logged_in    = True
+                    st.session_state.company_id   = company["id"]
+                    st.session_state.company_name = company.get("company_name", company_id)
+                    st.rerun()
+                else:
+                    st.error("会社IDまたはパスワードが間違っています")
+
+    st.caption("※ テスト用アカウント：ID = nikko　パスワード = 0000")
+
+
+def verify_password(company_id: str, password: str) -> Optional[dict]:
+    """login() の別名（後方互換）"""
+    return login(company_id, password)
