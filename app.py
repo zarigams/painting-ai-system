@@ -652,4 +652,4 @@ elif st.session_state.step == "result":
 
     with st.expander("🔧 詳細データ（デバッグ用）"):
         import json as _json
-        st.json(estima
+        st.json(estimation)
