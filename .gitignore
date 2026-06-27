@@ -1,0 +1,27 @@
+# 環境変数・APIキー（絶対にアップロードしない）
+.env
+data/config.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+venv/
+env/
+.venv/
+
+# 出力ファイル
+output/
+*.xlsx
+*.pdf
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/secrets.toml
+
+# テンプレートExcelは除外しない
+!data/templates/*.xlsx

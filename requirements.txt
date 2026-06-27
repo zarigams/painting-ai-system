@@ -1,0 +1,32 @@
+# 塗装会社専用AI積算・見積りシステム
+# Phase1 依存パッケージ
+
+# Web UI
+streamlit>=1.35.0
+
+# OpenAI API（LLM・画像解析・音声認識）
+openai>=1.30.0
+
+# 環境変数管理
+python-dotenv>=1.0.0
+
+# Excel出力
+openpyxl>=3.1.2
+
+# PDF出力
+reportlab>=4.2.0
+
+# データ処理
+pandas>=2.0.0
+
+# 画像処理（将来的な前処理用）
+Pillow>=10.0.0
+
+# ─────────────────────────────────────
+# Phase2以降（必要になったら追加）
+# ─────────────────────────────────────
+# pytesseract       # OCR（図面テキスト抽出）
+# pdf2image         # PDF→画像変換
+# opencv-python     # 画像前処理
+# SpeechRecognition # 音声認識ラッパー
+# ollama            # ローカルLLM（Phase5）
