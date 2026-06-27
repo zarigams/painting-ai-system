@@ -13,6 +13,23 @@ from typing import Optional
 from openai import OpenAI
 
 
+def _get_api_key() -> Optional[str]:
+    """
+    OpenAI APIキーを取得する。
+    優先順位: Streamlit Secrets → 環境変数(OPENAI_API_KEY)
+    Streamlitが無い／Secrets未設定の環境でも安全に動くようフォールバックする。
+    """
+    try:
+        import streamlit as st
+        key = st.secrets.get("OPENAI_API_KEY")
+        if key:
+            return key
+    except Exception:
+        # streamlit未インストール or secrets未設定 → 環境変数へフォールバック
+        pass
+    return os.getenv("OPENAI_API_KEY")
+
+
 def _encode_image(image_path: str) -> str:
     """画像ファイルをbase64エンコード"""
     with open(image_path, "rb") as f:
@@ -31,9 +48,12 @@ class LLMClient:
     """
 
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.api_key = api_key or _get_api_key()
         if not self.api_key:
-            raise ValueError("OPENAI_API_KEYが設定されていません。.envファイルを確認してください。")
+            raise ValueError(
+                "OPENAI_API_KEYが設定されていません。"
+                "Streamlit CloudのSecrets、または.envファイル(環境変数)を確認してください。"
+            )
         self.client = OpenAI(api_key=self.api_key)
         self.model = "gpt-4o"
 
@@ -129,3 +149,18 @@ class LLMClient:
         )
 
         return response.choices[0].message.content
+
+    def transcribe_audio(self, audio_bytes: bytes, filename: str = "audio.webm") -> str:
+        """
+        音声バイト列をOpenAI Whisper APIで日本語文字起こしする
+        対応フォーマット: webm, mp3, mp4, wav, m4a 等
+        """
+        import io
+        audio_file = io.BytesIO(audio_bytes)
+        audio_file.name = filename
+        transcript = self.client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            language="ja",
+        )
+        return transcript.text
