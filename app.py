@@ -1,739 +1,608 @@
 """
-塗装会社専用 AI積算・見積りシステム
-メインアプリケーション（Streamlit）
+塗装会社専用AI積算・見積りシステム
+4ステップフロー: 案件情報 → AI解析 → 数量確認 → 見積書出力
 """
 
-import json
-import os
 import sys
+import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
-from dotenv import load_dotenv
 
-# パス設定
 sys.path.insert(0, str(Path(__file__).parent))
-load_dotenv()
 
-CONFIG_PATH = Path(__file__).parent / "data" / "config.json"
+from core.auth import verify_password, show_login_page
+from core.quantity_calculator import calculate_from_quantities
+from core.template_filler import fill_template
 
-# ─────────────────────────────────────────
-# 設定ファイルの読み書き
-# ─────────────────────────────────────────
-def load_config() -> dict:
-    if CONFIG_PATH.exists():
-        try:
-            with open(CONFIG_PATH, encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
-
-def save_config(config: dict):
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
-
-def get_api_key() -> str:
-    try:
-        secret_key = st.secrets.get("OPENAI_API_KEY", "")
-        if secret_key:
-            return secret_key
-    except Exception:
-        pass
-    if st.session_state.get("api_key"):
-        return st.session_state["api_key"]
-    config = load_config()
-    if config.get("openai_api_key"):
-        return config["openai_api_key"]
-    return os.getenv("OPENAI_API_KEY", "")
-
-# ─────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # ページ設定
-# ─────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="AI積算・見積りシステム",
+    page_title="AI塗装積算システム",
     page_icon="🏠",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
-# ─────────────────────────────────────────
-# ログイン画面
-# ─────────────────────────────────────────
-def show_login_page():
-    st.markdown("""
-    <style>
-        [data-testid="stSidebar"] { display: none; }
-        .login-title {
-            text-align: center;
-            color: #1a73e8;
-            font-size: 1.8rem;
-            font-weight: bold;
-            margin-bottom: 4px;
-        }
-        .login-subtitle {
-            text-align: center;
-            color: #888;
-            font-size: 0.95rem;
-            margin-bottom: 32px;
-        }
-        .login-icon {
-            text-align: center;
-            font-size: 3rem;
-            margin-bottom: 12px;
-        }
-    </style>
-    """, unsafe_allow_html=True)
+# ─────────────────────────────────────────────────────────────
+# セッション状態の初期化
+# ─────────────────────────────────────────────────────────────
+DEFAULTS = {
+    "logged_in":         False,
+    "company_id":        None,
+    "company_name":      None,
+    "step":              1,
+    "project":           {},
+    "drawing_data":      {},
+    "image_data":        {},
+    "quantities":        {},
+    "estimation":        {},
+    "voice_memo":        "",
+}
+for _k, _v in DEFAULTS.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
 
-    _, col, _ = st.columns([1, 1.2, 1])
-    with col:
-        st.markdown("")
-        st.markdown("")
-        st.markdown('<div class="login-icon">🏠</div>', unsafe_allow_html=True)
-        st.markdown('<div class="login-title">AI積算・見積りシステム</div>', unsafe_allow_html=True)
-        st.markdown('<div class="login-subtitle">塗装会社専用</div>', unsafe_allow_html=True)
-
-        with st.form("login_form"):
-            company_id = st.text_input("会社ID", placeholder="会社IDを入力")
-            password   = st.text_input("パスワード", type="password", placeholder="パスワードを入力")
-            submitted  = st.form_submit_button("ログイン", use_container_width=True, type="primary")
-
-        if submitted:
-            from core.auth import login as auth_login
-            company = auth_login(company_id.strip(), password)
-            if company:
-                st.session_state["logged_in"] = True
-                st.session_state["company"]    = company
-                st.rerun()
-            else:
-                st.error("会社IDまたはパスワードが違います")
-
-        st.markdown("---")
-        st.caption("アカウント発行はシステム管理者までお問い合わせください。")
-
-# ログイン状態チェック
-if "logged_in" not in st.session_state:
-    st.session_state["logged_in"] = False
-
-if not st.session_state["logged_in"]:
+# ─────────────────────────────────────────────────────────────
+# ログイン
+# ─────────────────────────────────────────────────────────────
+if not st.session_state.logged_in:
     show_login_page()
     st.stop()
 
-# ─────────────────────────────────────────
-# カスタムCSS
-# ─────────────────────────────────────────
-st.markdown("""
-<style>
-    .main-header {
-        background: linear-gradient(135deg, #1a73e8 0%, #0d47a1 100%);
-        color: white;
-        padding: 20px 30px;
-        border-radius: 12px;
-        margin-bottom: 24px;
-    }
-    .question-card {
-        background: #fff3e0;
-        border-left: 4px solid #ff9800;
-        padding: 12px 16px;
-        border-radius: 4px;
-        margin-bottom: 12px;
-    }
-    .total-box {
-        background: #e8f5e9;
-        border: 2px solid #4caf50;
-        border-radius: 12px;
-        padding: 20px;
-        text-align: center;
-    }
-    .stButton > button {
-        border-radius: 8px;
-        font-size: 1.1rem;
-        font-weight: 600;
-        padding: 10px 24px;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# ─────────────────────────────────────────
-# セッション初期化
-# ─────────────────────────────────────────
-def init_session():
-    defaults = {
-        "step": "input",
-        "project_data": {},
-        "questions": [],
-        "answers": {},
-        "estimation": {},
-        "image_bytes_list": [],
-        "description": "",
-        "client_name": "",
-        "site_address": "",
-        "sales_rep": "",
-        "company_name": "",
-        "template_id": "standard",
-        "drawing_data": {},
-        "api_key": "",
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-
-init_session()
-
-if not st.session_state["api_key"]:
-    saved = load_config().get("openai_api_key", "")
-    if saved:
-        st.session_state["api_key"] = saved
-
-# ─────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 # サイドバー
-# ─────────────────────────────────────────
-company_info = st.session_state.get("company", {})
-
+# ─────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown(f"### 🏢 {company_info.get('company_name', '')}")
-    st.caption(f"{company_info.get('department', '')}　{company_info.get('contact_name', '')}")
-
+    st.markdown(f"### 🏢 {st.session_state.company_name or ''}様")
+    st.markdown("---")
+    step_labels = ["① 案件情報入力", "② AI解析", "③ 数量確認", "④ 見積書出力"]
+    cur = st.session_state.step
+    for i, label in enumerate(step_labels, 1):
+        if i < cur:
+            st.markdown(f"✅ {label}")
+        elif i == cur:
+            st.markdown(f"▶️ **{label}**")
+        else:
+            st.markdown(f"⬜ {label}")
+    st.markdown("---")
+    if st.button("🔄 最初からやり直す", use_container_width=True):
+        for k in ["step", "project", "drawing_data", "image_data",
+                  "quantities", "estimation", "voice_memo",
+                  "pdf_bytes", "photo_bytes_list"]:
+            if k in st.session_state:
+                del st.session_state[k]
+        st.session_state.step = 1
+        st.rerun()
     if st.button("🚪 ログアウト", use_container_width=True):
-        st.session_state["logged_in"] = False
-        st.session_state["company"]   = {}
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
         st.rerun()
 
-    st.markdown("---")
-
-    # 会社情報編集
-    with st.expander("🏢 会社情報を編集"):
-        from core.auth import update_company_info
-        cid = company_info.get("id", "")
-        f_company  = st.text_input("会社名",   company_info.get("company_name", ""), key="s_company")
-        f_dept     = st.text_input("部署名",   company_info.get("department", ""),   key="s_dept")
-        f_contact  = st.text_input("担当者名", company_info.get("contact_name", ""), key="s_contact")
-        f_tel      = st.text_input("TEL",      company_info.get("tel", ""),           key="s_tel")
-        f_fax      = st.text_input("FAX",      company_info.get("fax", ""),           key="s_fax")
-        f_address  = st.text_input("住所",     company_info.get("address", ""),       key="s_addr")
-        if st.button("💾 保存", use_container_width=True, key="save_company"):
-            updates = {
-                "company_name": f_company,
-                "department":   f_dept,
-                "contact_name": f_contact,
-                "tel":          f_tel,
-                "fax":          f_fax,
-                "address":      f_address,
-            }
-            update_company_info(cid, updates)
-            st.session_state["company"].update(updates)
-            st.success("保存しました")
-            st.rerun()
-
-    # パスワード変更
-    with st.expander("🔑 パスワード変更"):
-        from core.auth import change_password
-        old_pw  = st.text_input("現在のパスワード",       type="password", key="old_pw")
-        new_pw  = st.text_input("新しいパスワード",       type="password", key="new_pw")
-        new_pw2 = st.text_input("新しいパスワード（確認）", type="password", key="new_pw2")
-        if st.button("変更する", use_container_width=True, key="change_pw"):
-            if new_pw != new_pw2:
-                st.error("パスワードが一致しません")
-            elif len(new_pw) < 6:
-                st.error("6文字以上で設定してください")
-            elif change_password(cid, old_pw, new_pw):
-                st.success("パスワードを変更しました")
-            else:
-                st.error("現在のパスワードが違います")
-
-    st.markdown("---")
-
-    # APIキー設定
-    st.markdown("### 🔑 OpenAI APIキー")
-    _secret_key_set = False
-    try:
-        _secret_key_set = bool(st.secrets.get("OPENAI_API_KEY", ""))
-    except Exception:
-        pass
-
-    if _secret_key_set:
-        st.success("✅ APIキー設定済み（管理者設定）")
-    else:
-        current_key = st.session_state.get("api_key", "")
-        if current_key:
-            st.success(f"✅ 設定済み（sk-...{current_key[-6:]}）")
-        else:
-            st.warning("⚠️ 未設定")
-        new_key = st.text_input("APIキーを入力", type="password", placeholder="sk-xxxxxxxxxxxxxxxx")
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("💾 保存", use_container_width=True, disabled=not new_key, key="save_api"):
-                if new_key.startswith("sk-"):
-                    st.session_state["api_key"] = new_key
-                    cfg = load_config(); cfg["openai_api_key"] = new_key; save_config(cfg)
-                    st.success("保存しました"); st.rerun()
-                else:
-                    st.error("sk- で始まるキーを入力してください")
-        with c2:
-            if st.button("🗑️ 削除", use_container_width=True, disabled=not current_key, key="del_api"):
-                st.session_state["api_key"] = ""
-                cfg = load_config(); cfg.pop("openai_api_key", None); save_config(cfg)
-                st.rerun()
-
-    st.markdown("---")
-    st.caption("塗装会社専用 AI積算システム v1.0")
+st.title("🏠 AI塗装積算システム")
 
 
-# ─────────────────────────────────────────
-# ヘッダー
-# ─────────────────────────────────────────
-st.markdown("""
-<div class="main-header">
-    <h2 style="margin:0">🏠 AI積算・見積りシステム</h2>
-    <p style="margin:4px 0 0 0; opacity:0.85">写真と説明だけで見積書を自動作成</p>
-</div>
-""", unsafe_allow_html=True)
+# ═════════════════════════════════════════════════════════════
+# STEP 1: 案件情報入力
+# ═════════════════════════════════════════════════════════════
+if st.session_state.step == 1:
+    st.header("① 案件情報入力")
+    st.caption("お客様情報・建物情報・資料をご入力ください")
 
-
-# ─────────────────────────────────────────
-# APIキー未設定ガード
-# ─────────────────────────────────────────
-api_key = get_api_key()
-if not api_key:
-    st.error("⚠️ OpenAI APIキーが設定されていません。")
-    st.info("👈 左のサイドバーを開いて「設定」からAPIキーを入力してください。")
-    st.stop()
-
-
-# ─────────────────────────────────────────
-# モジュール遅延インポート
-# ─────────────────────────────────────────
-@st.cache_resource(hash_funcs={str: lambda x: x})
-def load_modules(api_key: str):
-    from modules.llm_client import LLMClient
-    from modules.image_analyzer import ImageAnalyzer
-    from modules.question_engine import QuestionEngine
-    from core.estimation_engine import EstimationEngine
-    from core.quote_generator import QuoteGenerator
-
-    llm = LLMClient(api_key=api_key)
-    return {
-        "analyzer":  ImageAnalyzer(llm),
-        "questions": QuestionEngine(llm),
-        "estimator": EstimationEngine(llm),
-        "generator": QuoteGenerator(),
-    }
-
-
-# ─────────────────────────────────────────
-# ステップ表示バー
-# ─────────────────────────────────────────
-STEPS = {
-    "input":      ("① 入力",     "📸"),
-    "analyzing":  ("② 解析中",   "🔍"),
-    "questions":  ("③ 確認",     "❓"),
-    "estimating": ("④ 積算中",   "📊"),
-    "result":     ("⑤ 見積完成", "✅"),
-}
-step_cols = st.columns(len(STEPS))
-for i, (key, (label, icon)) in enumerate(STEPS.items()):
-    with step_cols[i]:
-        is_current = st.session_state.step == key
-        style = "background:#1a73e8;color:white;padding:8px;border-radius:8px;text-align:center" \
-            if is_current else "background:#f0f0f0;color:#888;padding:8px;border-radius:8px;text-align:center"
-        st.markdown(f'<div style="{style}">{icon} {label}</div>', unsafe_allow_html=True)
-
-st.markdown("---")
-
-
-# ═══════════════════════════════════════════
-# STEP 1: 入力画面
-# ═══════════════════════════════════════════
-if st.session_state.step == "input":
-
-    st.markdown("### 📸 現場情報を入力してください")
-    col1, col2 = st.columns([3, 2])
+    col1, col2 = st.columns(2)
 
     with col1:
-        # テンプレート選択
-        from core.template_manager import list_templates
-        templates   = list_templates()
-        tmpl_ids    = [t["id"]   for t in templates]
-        tmpl_labels = [t["name"] for t in templates]
-        cur_idx     = tmpl_ids.index(st.session_state.template_id) if st.session_state.template_id in tmpl_ids else 0
-        sel_label   = st.selectbox("📋 見積テンプレート", tmpl_labels, index=cur_idx)
-        st.session_state.template_id = tmpl_ids[tmpl_labels.index(sel_label)]
+        st.subheader("👤 お客様・案件情報")
+        client_name   = st.text_input("お客様名 ＊", placeholder="例：住吉屋 栄子 様")
+        site_address  = st.text_input("現場住所 ＊", placeholder="例：東京都世田谷区…")
+        sales_rep     = st.text_input("担当者名",    placeholder="例：山田 太郎")
+        project_name  = st.text_input("工事件名",    placeholder="例：外壁・屋根塗装工事")
 
-        # 案件基本情報
-        st.markdown("**案件情報**（任意）")
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            st.session_state.client_name  = st.text_input("お客様名", st.session_state.client_name,  placeholder="山田太郎様")
-        with c2:
-            st.session_state.company_name = st.text_input("受注先",   st.session_state.company_name, placeholder="〇〇建設㈱")
-        with c3:
-            st.session_state.site_address = st.text_input("現場住所", st.session_state.site_address, placeholder="東京都〇〇区...")
-        with c4:
-            st.session_state.sales_rep    = st.text_input("担当者",   st.session_state.sales_rep,    placeholder="鈴木")
-
-        # ── 図面PDFアップロード ──────────────────
-        st.markdown("**図面PDF**（間取り図・立面図など）")
-        uploaded_pdf = st.file_uploader(
-            "図面PDFをアップロード（任意）",
-            type=["pdf"],
-            help="建築図面があれば面積・階数・構造を自動読み取りします",
-            key="pdf_uploader",
-        )
-        if uploaded_pdf is not None:
-            pdf_bytes = uploaded_pdf.read()
-            col_pdf1, col_pdf2 = st.columns([2, 1])
-            with col_pdf1:
-                st.info(f"📄 {uploaded_pdf.name}（{len(pdf_bytes)//1024} KB）")
-            with col_pdf2:
-                analyze_pdf_btn = st.button(
-                    "🔍 図面を解析",
-                    use_container_width=True,
-                    key="analyze_pdf_btn",
-                )
-            if analyze_pdf_btn:
-                with st.spinner("図面をAIが解析中...（30秒ほどかかります）"):
-                    try:
-                        from core.drawing_analyzer import DrawingAnalyzer
-                        da = DrawingAnalyzer(api_key=get_api_key())
-                        result = da.analyze(pdf_bytes)
-                        st.session_state.drawing_data = result
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"図面解析エラー: {e}")
-
-        # 図面解析結果の表示
-        drawing = st.session_state.drawing_data
-        if drawing and not drawing.get("error") and not drawing.get("parse_error"):
-            confidence_icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(
-                drawing.get("confidence", ""), "⚪"
-            )
-            st.success(
-                f"{confidence_icon} 図面解析完了｜"
-                f"{drawing.get('building_type','')}"
-                f"　{drawing.get('structure','')}"
-                f"　{drawing.get('floors','')}階"
-                f"　外壁{drawing.get('exterior_wall_area','?')}㎡"
-                f"　屋根{drawing.get('roof_area','?')}㎡"
-            )
-            if st.button("🗑️ 図面データをクリア", key="clear_drawing"):
-                st.session_state.drawing_data = {}
-                st.rerun()
-        elif drawing.get("error") or drawing.get("parse_error"):
-            st.warning("図面の解析に失敗しました。再度試すか、テキストで情報を入力してください。")
-
-        # ── 現場写真 ─────────────────────────────
-        st.markdown("**現場写真**（10〜30枚推奨）")
-        uploaded_files = st.file_uploader(
-            "写真をアップロード",
-            type=["jpg", "jpeg", "png", "webp"],
-            accept_multiple_files=True,
-            help="外壁・屋根・軒天・雨樋など各部位の写真をまとめてアップロード",
-        )
-        if uploaded_files:
-            st.session_state.image_bytes_list = [f.read() for f in uploaded_files]
-            st.success(f"✅ {len(uploaded_files)}枚の写真を読み込みました")
-            thumb_cols = st.columns(min(6, len(uploaded_files)))
-            for col, file in zip(thumb_cols, uploaded_files[:6]):
-                with col:
-                    st.image(file, use_container_width=True)
-            if len(uploaded_files) > 6:
-                st.caption(f"他 {len(uploaded_files) - 6} 枚")
+        st.subheader("🏗️ 建物基本情報")
+        building_type   = st.selectbox("建物種別",
+                            ["戸建て", "共同住宅", "マンション", "店舗・工場"])
+        building_floors = st.number_input("階数", min_value=1, max_value=10, value=2, step=1)
+        building_area   = st.number_input("建築面積（㎡）", min_value=0.0,
+                            value=0.0, step=1.0,
+                            help="わかる場合のみ入力。AI解析時に参照します。")
 
     with col2:
-        st.markdown("**🎤 音声入力**（スマホのマイクで話す）")
-        audio_data = st.audio_input(
-            "録音ボタンを押して話してください",
-            key="voice_input",
+        st.subheader("📄 図面・写真のアップロード")
+        pdf_file = st.file_uploader(
+            "図面PDF（任意）", type=["pdf"],
+            help="平面図・立面図等をアップロードするとAIが面積を自動計算します",
         )
-        if audio_data is not None:
-            if st.button("📝 文字起こしして説明欄に追加", use_container_width=True, key="transcribe_btn"):
-                with st.spinner("文字起こし中...（数秒かかります）"):
+        photo_files = st.file_uploader(
+            "現場写真（任意・複数可）",
+            type=["jpg", "jpeg", "png", "webp"],
+            accept_multiple_files=True,
+            help="外壁・屋根・付帯部の写真をアップロードすると劣化状況も解析します",
+        )
+
+        st.subheader("🎤 音声メモ（任意）")
+        audio_input = st.audio_input("現地調査メモを音声で入力")
+        if audio_input is not None:
+            if st.button("文字起こし実行"):
+                with st.spinner("音声を文字起こし中…"):
                     try:
                         from modules.llm_client import LLMClient
-                        llm = LLMClient(api_key=get_api_key())
-                        transcribed = llm.transcribe_audio(audio_data.read())
-                        if st.session_state.description:
-                            st.session_state.description += "\n" + transcribed
-                        else:
-                            st.session_state.description = transcribed
-                        st.success(f"✅ 「{transcribed}」")
-                        st.rerun()
+                        llm = LLMClient()
+                        text = llm.transcribe_audio(audio_input.getvalue(), "memo.webm")
+                        st.session_state.voice_memo = text
+                        st.success("文字起こし完了！")
                     except Exception as e:
-                        st.error(f"文字起こしエラー: {e}")
+                        st.error(f"文字起こし失敗: {e}")
 
-        st.markdown("**営業担当からの説明**")
-        st.session_state.description = st.text_area(
-            "施工内容・要望を入力",
-            st.session_state.description,
-            height=200,
-            placeholder="例：\n・外壁のみ塗装\n・屋根は塗らない\n・雨樋全部塗る\n・2階建て木造\n・外壁面積は約120㎡くらい",
-            help="音声入力後に自動でここに追加されます",
+        voice_memo = st.text_area(
+            "現地メモ（音声文字起こし or 手入力）",
+            value=st.session_state.voice_memo,
+            height=120,
+            placeholder="外壁の劣化状況、施工範囲、特記事項など自由に入力",
         )
 
-        st.markdown("**入力チェック**")
-        has_images = len(st.session_state.image_bytes_list) > 0
-        has_desc   = len(st.session_state.description.strip()) > 10
+    st.markdown("---")
+    st.subheader("🔧 施工範囲（該当するものにチェック）")
+    sc1, sc2, sc3 = st.columns(3)
+    with sc1:
+        do_roof        = st.checkbox("屋根塗装",       value=True)
+        do_wall        = st.checkbox("外壁塗装",       value=True)
+        do_fascia      = st.checkbox("破風・鼻隠し",   value=True)
+        do_soffit      = st.checkbox("軒天",           value=True)
+    with sc2:
+        do_gutter      = st.checkbox("雨樋",           value=True)
+        do_sealing     = st.checkbox("シーリング",     value=True)
+        do_foundation  = st.checkbox("基礎塗装",       value=False)
+        do_shutter_box = st.checkbox("シャッターボックス", value=False)
+    with sc3:
+        do_protection  = st.checkbox("防護管",         value=False)
+        do_guardman    = st.checkbox("ガードマン",     value=False)
+        do_water_cutoff = st.checkbox("土台水切",      value=True)
+        do_window_top  = st.checkbox("出窓天端",       value=False)
 
-        if has_images:
-            st.success(f"📸 写真: {len(st.session_state.image_bytes_list)}枚")
+    if st.button("次へ → AI解析開始", type="primary", use_container_width=True):
+        if not client_name:
+            st.error("お客様名を入力してください")
+        elif not site_address:
+            st.error("現場住所を入力してください")
         else:
-            st.warning("📸 写真: 未アップロード（テキストのみでも可）")
-
-        if has_desc:
-            st.success("📝 説明: 入力済み")
-        else:
-            st.warning("📝 説明: 未入力（写真のみでも可）")
-
-        if st.button("🚀 AI解析スタート", type="primary", disabled=not (has_images or has_desc), use_container_width=True):
-            st.session_state.step = "analyzing"
-            st.rerun()
-
-
-# ═══════════════════════════════════════════
-# STEP 2: 解析中
-# ═══════════════════════════════════════════
-elif st.session_state.step == "analyzing":
-    st.markdown("### 🔍 現場情報を解析中...")
-    modules = load_modules(get_api_key())
-
-    with st.spinner("写真と説明をAIが解析しています（30秒〜1分）..."):
-        try:
-            # 図面解析結果があれば説明文の先頭に付加
-            from core.drawing_analyzer import drawing_data_to_text
-            drawing_text = drawing_data_to_text(st.session_state.drawing_data)
-            merged_description = (
-                drawing_text + "\n\n" + st.session_state.description
-                if drawing_text else st.session_state.description
-            )
-
-            result = modules["analyzer"].analyze(
-                image_bytes_list=st.session_state.image_bytes_list,
-                description=merged_description,
-            )
-            st.session_state.project_data = result
-            q_result = modules["questions"].generate_questions(result)
-            st.session_state.questions = q_result.get("questions", [])
-
-            if q_result.get("ready_to_estimate"):
-                st.session_state.step = "estimating"
-            else:
-                st.session_state.step = "questions"
-            st.rerun()
-
-        except Exception as e:
-            st.error(f"解析エラー: {e}")
-            if st.button("最初に戻る"):
-                st.session_state.step = "input"; st.rerun()
-
-
-# ═══════════════════════════════════════════
-# STEP 3: 不足情報の質問
-# ═══════════════════════════════════════════
-elif st.session_state.step == "questions":
-    st.markdown("### ❓ 確認が必要な項目があります")
-    st.info("以下の項目を確認して積算精度を上げてください。すべてスキップすることもできます。")
-
-    project = st.session_state.project_data
-    scope   = project.get("scope", {})
-
-    with st.expander("📋 解析済み情報を確認", expanded=False):
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("**建物概要**")
-            overview = project.get("building_overview", {})
-            st.write(f"種別: {overview.get('type', '不明')}")
-            st.write(f"構造: {overview.get('structure', '不明')}")
-            st.write(f"階数: {overview.get('floors', '不明')}")
-        with c2:
-            st.markdown("**施工範囲**")
-            scope_labels = {
-                "exterior_wall": "外壁", "roof": "屋根", "soffit": "軒天",
-                "fascia": "破風", "gutters": "雨樋", "sealing": "シーリング",
-                "scaffold": "足場", "high_pressure_wash": "高圧洗浄",
+            st.session_state.project = {
+                "client_name":     client_name,
+                "site_address":    site_address,
+                "sales_rep":       sales_rep,
+                "project_name":    project_name or f"{client_name}邸 塗装工事",
+                "building_type":   building_type,
+                "building_floors": building_floors,
+                "building_area":   building_area,
+                "voice_memo":      voice_memo,
+                "scope": {
+                    "roof":         do_roof,
+                    "wall":         do_wall,
+                    "fascia":       do_fascia,
+                    "soffit":       do_soffit,
+                    "gutter":       do_gutter,
+                    "sealing":      do_sealing,
+                    "foundation":   do_foundation,
+                    "shutter_box":  do_shutter_box,
+                    "protection":   do_protection,
+                    "guardman":     do_guardman,
+                    "water_cutoff": do_water_cutoff,
+                    "window_top":   do_window_top,
+                },
             }
-            for key, label in scope_labels.items():
-                val = scope.get(key)
-                if val is True:  st.write(f"✅ {label}")
-                elif val is False: st.write(f"❌ {label}")
+            if pdf_file:
+                st.session_state["pdf_bytes"] = pdf_file.getvalue()
+            elif "pdf_bytes" in st.session_state:
+                del st.session_state["pdf_bytes"]
+            if photo_files:
+                st.session_state["photo_bytes_list"] = [f.getvalue() for f in photo_files]
+            elif "photo_bytes_list" in st.session_state:
+                del st.session_state["photo_bytes_list"]
+            st.session_state.voice_memo = voice_memo
+            st.session_state.step = 2
+            st.rerun()
 
-    questions = st.session_state.questions
-    if not questions:
-        st.session_state.step = "estimating"; st.rerun()
 
-    answers = {}
-    st.markdown(f"**{len(questions)}件の確認事項**")
+# ═════════════════════════════════════════════════════════════
+# STEP 2: AI解析
+# ═════════════════════════════════════════════════════════════
+elif st.session_state.step == 2:
+    st.header("② AI解析")
+    proj       = st.session_state.project
+    has_pdf    = "pdf_bytes" in st.session_state
+    has_photos = bool(st.session_state.get("photo_bytes_list"))
 
-    for i, q in enumerate(questions):
-        st.markdown(f'<div class="question-card">❓ {q.get("question", "")}</div>', unsafe_allow_html=True)
-        q_type    = q.get("type", "text")
-        field_key = q.get("field_key", f"q{i}")
-        cur_val   = st.session_state.answers.get(field_key, "")
+    def _build_quantities_from_analysis(drawing_data, image_data, proj):
+        scope = proj.get("scope", {})
+        q = {
+            "do_roof":            scope.get("roof",      True),
+            "do_wall":            scope.get("wall",      True),
+            "do_foundation":      scope.get("foundation", False),
+            "do_lifting":         True,
+            "do_transport":       True,
+            "do_road_permit":     True,
+            "do_misc_seal":       scope.get("sealing",   True),
+            "do_protection_pipe": scope.get("protection", False),
+            "guardman_count":     1 if scope.get("guardman") else 0,
+        }
+        if drawing_data:
+            wall = drawing_data.get("exterior_wall_area")
+            roof = drawing_data.get("roof_area")
+            if wall:
+                q["wall_area"]          = float(wall)
+                q["scaffold_area"]      = round(float(wall) * 1.1, 1)
+                q["joint_seal_length"]  = round(float(wall) * 0.8, 1)
+            if roof:
+                q["roof_area"]          = float(roof)
+                q["roof_scaffold_area"] = float(roof)
+        if image_data and "quantities" in image_data:
+            iq = image_data["quantities"]
+            for src, dst in [
+                ("exterior_wall_area", "wall_area"),
+                ("roof_area",          "roof_area"),
+                ("fascia_length",      "fascia_length"),
+                ("gutter_length",      "gutter_length"),
+                ("sealing_length",     "joint_seal_length"),
+                ("scaffold_area",      "scaffold_area"),
+            ]:
+                v = iq.get(src, {})
+                val = v.get("value") if isinstance(v, dict) else None
+                if val and dst not in q:
+                    q[dst] = float(val)
+        return q
 
-        if q_type == "yes_no":
-            options = ["未回答", "はい（する）", "いいえ（しない）"]
-            sel = st.selectbox("", options, key=f"q_{i}", label_visibility="collapsed")
-            if sel == "はい（する）":   answers[field_key] = True
-            elif sel == "いいえ（しない）": answers[field_key] = False
-        elif q_type == "number":
-            val = st.number_input("", min_value=0.0, value=float(cur_val) if cur_val else 0.0, step=0.5, key=f"q_{i}", label_visibility="collapsed")
-            if val > 0: answers[field_key] = val
-        elif q_type == "select":
-            opts = ["未回答"] + q.get("options", [])
-            sel = st.selectbox("", opts, key=f"q_{i}", label_visibility="collapsed")
-            if sel != "未回答": answers[field_key] = sel
+    if not has_pdf and not has_photos:
+        st.info("📋 図面・写真のアップロードなし → 数量入力フォームに直接進みます")
+        if st.button("数量入力フォームへ →", type="primary"):
+            scope = proj.get("scope", {})
+            st.session_state.quantities = _build_quantities_from_analysis({}, {}, proj)
+            st.session_state.step = 3
+            st.rerun()
+    else:
+        analyze_done = bool(st.session_state.get("drawing_data") or st.session_state.get("image_data"))
+
+        if not analyze_done:
+            if st.button("▶️ AI解析を開始する", type="primary", use_container_width=True):
+                with st.spinner("AIが資料を解析中…（30秒〜1分程度）"):
+                    drawing_data = {}
+                    image_data   = {}
+                    try:
+                        from modules.llm_client import LLMClient
+                        llm = LLMClient()
+
+                        if has_pdf:
+                            st.info("📐 図面PDFを解析中…")
+                            from core.drawing_analyzer import DrawingAnalyzer
+                            da = DrawingAnalyzer(llm)
+                            drawing_data = da.analyze(st.session_state.pdf_bytes)
+                            st.success(f"図面解析完了: {drawing_data.get('building_type','')} {drawing_data.get('floors','')}階")
+
+                        if has_photos:
+                            st.info("📸 現場写真を解析中…")
+                            from modules.image_analyzer import ImageAnalyzer
+                            ia = ImageAnalyzer(llm)
+                            desc = proj.get("voice_memo", "") + f"\n建物種別: {proj.get('building_type','')}"
+                            image_data = ia.analyze(st.session_state.photo_bytes_list, desc)
+                            st.success("写真解析完了")
+
+                        st.session_state.drawing_data = drawing_data
+                        st.session_state.image_data   = image_data
+                        st.session_state.quantities   = _build_quantities_from_analysis(
+                            drawing_data, image_data, proj)
+                        st.rerun()
+
+                    except Exception as e:
+                        st.error(f"AI解析エラー: {e}")
+                        st.info("スキップして手動入力できます")
+                        if st.button("手動入力で続行 →"):
+                            st.session_state.quantities = _build_quantities_from_analysis({}, {}, proj)
+                            st.session_state.step = 3
+                            st.rerun()
         else:
-            val = st.text_input("", cur_val, key=f"q_{i}", label_visibility="collapsed")
-            if val: answers[field_key] = val
-        st.markdown("")
+            drawing_data = st.session_state.drawing_data
+            image_data   = st.session_state.image_data
+            st.success("✅ AI解析完了！")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("⏭️ スキップして積算する", use_container_width=True):
-            st.session_state.step = "estimating"; st.rerun()
-    with c2:
-        if st.button("✅ 回答を確定して積算する", type="primary", use_container_width=True):
-            st.session_state.answers.update(answers)
-            modules  = load_modules(get_api_key())
-            updated  = modules["questions"].apply_answers(st.session_state.project_data, answers)
-            st.session_state.project_data = updated
-            st.session_state.step = "estimating"; st.rerun()
+            if drawing_data:
+                st.subheader("📐 図面解析結果")
+                dc1, dc2, dc3 = st.columns(3)
+                dc1.metric("建物種別",     drawing_data.get("building_type", "不明"))
+                dc2.metric("外壁面積（推定）", f"{drawing_data.get('exterior_wall_area', '?')} ㎡")
+                dc3.metric("屋根面積（推定）", f"{drawing_data.get('roof_area', '?')} ㎡")
+                if drawing_data.get("notes"):
+                    st.caption(drawing_data["notes"])
+
+            if image_data and not image_data.get("parse_error"):
+                st.subheader("📸 写真解析結果")
+                cond = image_data.get("conditions", {})
+                if cond:
+                    st.caption(f"劣化状況: {cond.get('deterioration_level','不明')} / {cond.get('notes','')}")
+                missing = image_data.get("missing_info", [])
+                if missing:
+                    with st.expander("⚠️ 要確認事項"):
+                        for m in missing:
+                            st.write(f"• {m}")
+
+            if st.button("数量確認フォームへ →", type="primary", use_container_width=True):
+                st.session_state.step = 3
+                st.rerun()
+
+    if st.button("← 案件情報に戻る"):
+        st.session_state.step = 1
+        st.rerun()
 
 
-# ═══════════════════════════════════════════
-# STEP 4: 積算中
-# ═══════════════════════════════════════════
-elif st.session_state.step == "estimating":
-    st.markdown("### 📊 積算中...")
-    modules = load_modules(get_api_key())
+# ═════════════════════════════════════════════════════════════
+# STEP 3: 数量確認フォーム
+# ═════════════════════════════════════════════════════════════
+elif st.session_state.step == 3:
+    st.header("③ 数量確認フォーム")
+    st.caption("AI解析結果を確認・修正し、実際の数量を入力してください")
 
-    with st.spinner("数量・金額を計算しています（30秒〜1分）..."):
-        try:
-            estimation = modules["estimator"].calculate(st.session_state.project_data)
+    q = st.session_state.quantities.copy()
+
+    drawing_data = st.session_state.get("drawing_data", {})
+    if drawing_data.get("notes"):
+        st.info(f"📐 図面AIメモ: {drawing_data['notes']}")
+
+    with st.form("quantity_form"):
+
+        # ── 仮設工事 ──────────────────────────────────────────
+        st.subheader("🏗️ 仮設工事")
+        f1, f2 = st.columns(2)
+        with f1:
+            scaffold_area      = st.number_input("外部足場面積（㎡）",
+                min_value=0.0, value=float(q.get("scaffold_area", 0)), step=0.5)
+            roof_scaffold_area = st.number_input("屋根足場面積（㎡）",
+                min_value=0.0, value=float(q.get("roof_scaffold_area", 0)), step=0.5)
+            guardman_count     = st.number_input("ガードマン（人）",
+                min_value=0, value=int(q.get("guardman_count", 0)), step=1)
+        with f2:
+            do_lifting         = st.checkbox("昇降設備",           value=q.get("do_lifting", True))
+            do_transport       = st.checkbox("運搬費",             value=q.get("do_transport", True))
+            do_road_permit     = st.checkbox("道路使用許可申請",   value=q.get("do_road_permit", True))
+            do_protection_pipe = st.checkbox("防護管",             value=q.get("do_protection_pipe", False))
+
+        # ── 屋根塗装 ──────────────────────────────────────────
+        st.subheader("🏠 屋根塗装")
+        do_roof = st.checkbox("屋根塗装を実施する", value=q.get("do_roof", True))
+        if do_roof:
+            r1, r2, r3 = st.columns(3)
+            with r1:
+                roof_area = st.number_input("屋根面積（㎡）",
+                    min_value=0.0, value=float(q.get("roof_area", 0)), step=0.5)
+            with r2:
+                roof_type = st.selectbox("屋根種別",
+                    ["スレート", "金属屋根（ガルバリウム）", "日本瓦", "アスファルトシングル"])
+            with r3:
+                roof_paint_spec = st.selectbox("屋根塗料",
+                    ["クールタイトSi", "クールタイトF", "ヤネフレッシュSi",
+                     "アレスクールSi", "サーモアイSi", "その他"])
+        else:
+            roof_area = 0.0
+            roof_type = "スレート"
+            roof_paint_spec = "クールタイトSi"
+
+        # ── 外壁塗装 ──────────────────────────────────────────
+        st.subheader("🧱 外壁塗装")
+        w1, w2, w3 = st.columns(3)
+        with w1:
+            wall_area = st.number_input("外壁面積（㎡）",
+                min_value=0.0, value=float(q.get("wall_area", 0)), step=0.5)
+        with w2:
+            wall_paint_spec = st.selectbox("外壁塗料",
+                ["ラジカル塗料（パーフェクトトップ等）",
+                 "シリコン（クリーンマイルドシリコン等）",
+                 "フッ素（プレミアムシリコン等）", "無機塗料", "その他"])
+        with w3:
+            sub_paint_spec = st.selectbox("付帯部塗料",
+                ["クリーンマイルドシリコン", "1液ファインシリコンセラUV",
+                 "パーフェクトトップ", "その他"])
+
+        # ── 付帯部 ────────────────────────────────────────────
+        st.subheader("🔩 付帯部")
+        a1, a2, a3 = st.columns(3)
+        with a1:
+            fascia_length       = st.number_input("破風・鼻隠し（m）",
+                min_value=0.0, value=float(q.get("fascia_length", 0)), step=0.5)
+            soffit_length       = st.number_input("軒天（m換算）",
+                min_value=0.0, value=float(q.get("soffit_length", 0)), step=0.5)
+            soffit_sqm          = st.number_input("軒天（玄関・バルコニー ㎡）",
+                min_value=0.0, value=float(q.get("soffit_sqm", 0)), step=0.5)
+        with a2:
+            gutter_length       = st.number_input("雨樋（m）",
+                min_value=0.0, value=float(q.get("gutter_length", 0)), step=0.5)
+            water_cutoff_length = st.number_input("土台水切（m）",
+                min_value=0.0, value=float(q.get("water_cutoff_length", 0)), step=0.5)
+            window_top_length   = st.number_input("出窓天端（m）",
+                min_value=0.0, value=float(q.get("window_top_length", 0)), step=0.5)
+        with a3:
+            beam_length         = st.number_input("化粧梁・付梁（m）",
+                min_value=0.0, value=float(q.get("beam_length", 0)), step=0.5)
+            shutter_box_length  = st.number_input("シャッターボックス（m）",
+                min_value=0.0, value=float(q.get("shutter_box_length", 0)), step=0.5)
+            do_foundation       = st.checkbox("基礎塗装",
+                value=q.get("do_foundation", False))
+
+        # ── シーリング ────────────────────────────────────────
+        st.subheader("🔵 シーリング工事")
+        sl1, sl2, sl3 = st.columns(3)
+        with sl1:
+            joint_seal_length = st.number_input("目地シーリング（m）",
+                min_value=0.0, value=float(q.get("joint_seal_length", 0)), step=0.5)
+        with sl2:
+            do_misc_seal = st.checkbox("雑シーリング（開口部等）",
+                value=q.get("do_misc_seal", True))
+        with sl3:
+            skylight_count = st.number_input("トップライト（箇所）",
+                min_value=0, value=int(q.get("skylight_count", 0)), step=1)
+
+        # ── 金額調整 ──────────────────────────────────────────
+        st.subheader("💰 金額調整")
+        m1, m2 = st.columns(2)
+        with m1:
+            misc_cost = st.number_input("諸経費（円）",
+                min_value=0, value=int(q.get("misc_cost", 200000)), step=10000)
+        with m2:
+            discount = st.number_input("値引き（円）",
+                min_value=0, value=int(q.get("discount", 0)), step=10000,
+                help="値引き額（プラスで入力してください）")
+
+        submitted = st.form_submit_button(
+            "✅ 積算・見積書を作成する", type="primary", use_container_width=True)
+
+        if submitted:
+            new_q = {
+                "scaffold_area":      scaffold_area,
+                "roof_scaffold_area": roof_scaffold_area,
+                "guardman_count":     guardman_count,
+                "do_lifting":         do_lifting,
+                "do_transport":       do_transport,
+                "do_road_permit":     do_road_permit,
+                "do_protection_pipe": do_protection_pipe,
+                "do_roof":            do_roof,
+                "roof_area":          roof_area,
+                "roof_type":          roof_type,
+                "roof_paint_spec":    roof_paint_spec,
+                "wall_area":          wall_area,
+                "wall_paint_spec":    wall_paint_spec,
+                "sub_paint_spec":     sub_paint_spec,
+                "fascia_length":      fascia_length,
+                "soffit_length":      soffit_length,
+                "soffit_sqm":         soffit_sqm,
+                "gutter_length":      gutter_length,
+                "water_cutoff_length": water_cutoff_length,
+                "window_top_length":  window_top_length,
+                "beam_length":        beam_length,
+                "shutter_box_length": shutter_box_length,
+                "do_foundation":      do_foundation,
+                "joint_seal_length":  joint_seal_length,
+                "do_misc_seal":       do_misc_seal,
+                "skylight_count":     skylight_count,
+                "misc_cost":          misc_cost,
+                "discount":           discount,
+            }
+            st.session_state.quantities = new_q
+            proj = st.session_state.project
+            estimation = calculate_from_quantities(
+                new_q,
+                client_name=proj.get("client_name", ""),
+                site_address=proj.get("site_address", ""),
+                sales_rep=proj.get("sales_rep", ""),
+            )
             st.session_state.estimation = estimation
-            st.session_state.step = "result"; st.rerun()
-        except Exception as e:
-            st.error(f"積算エラー: {e}")
-            if st.button("確認ステップに戻る"):
-                st.session_state.step = "questions"; st.rerun()
+            st.session_state.step = 4
+            st.rerun()
+
+    if st.button("← AI解析に戻る"):
+        st.session_state.step = 2
+        st.rerun()
 
 
-# ═══════════════════════════════════════════
-# STEP 5: 結果表示
-# ═══════════════════════════════════════════
-elif st.session_state.step == "result":
+# ═════════════════════════════════════════════════════════════
+# STEP 4: 見積書出力
+# ═════════════════════════════════════════════════════════════
+elif st.session_state.step == 4:
+    st.header("④ 見積書完成")
+
+    proj       = st.session_state.project
     estimation = st.session_state.estimation
     items      = estimation.get("estimation_items", [])
 
-    st.markdown("### ✅ 積算・見積書")
-    info_cols = st.columns(3)
-    with info_cols[0]: st.metric("お客様", st.session_state.client_name or "未設定")
-    with info_cols[1]: st.metric("現場",   st.session_state.site_address or "未設定")
-    with info_cols[2]: st.metric("担当",   st.session_state.sales_rep or company_info.get("contact_name", "未設定"))
+    # ── サマリー ─────────────────────────────────────────────
+    m1, m2, m3 = st.columns(3)
+    m1.metric("小計（税抜）",  f"¥{estimation.get('subtotal', 0):,}")
+    m2.metric("消費税（10%）", f"¥{estimation.get('tax_amount', 0):,}")
+    m3.metric("合計（税込）",  f"¥{estimation.get('total', 0):,}")
+    if estimation.get("discount", 0) > 0:
+        st.info(f"💡 値引き ¥{estimation['discount']:,} 適用済み")
 
-    st.markdown("---")
-
-    total    = estimation.get("total",    0)
-    subtotal = estimation.get("subtotal", 0)
-    tax      = estimation.get("tax_amount", 0)
-
-    sum_cols = st.columns(3)
-    with sum_cols[0]: st.metric("小計（税抜）",  f"¥{subtotal:,}")
-    with sum_cols[1]: st.metric("消費税（10%）", f"¥{tax:,}")
-    with sum_cols[2]:
-        st.markdown(f"""
-<div class="total-box">
-    <div style="font-size:0.9rem;color:#555">税込合計</div>
-    <div style="font-size:2rem;font-weight:bold;color:#2e7d32">¥{total:,}</div>
-</div>""", unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.markdown("### 📋 積算明細")
-
+    # ── 明細テーブル ─────────────────────────────────────────
+    st.subheader("📋 積算明細")
     if items:
         import pandas as pd
-        df_data = []
-        for item in items:
-            estimated  = item.get("estimated", False)
-            needs_conf = item.get("needs_confirmation", False)
-            status = "⚠️ 要確認" if needs_conf else ("📊 推定" if estimated else "✅ 確定")
-            df_data.append({
-                "工種":      item.get("category", ""),
-                "品目":      item.get("item_name", ""),
-                "数量":      item.get("quantity", 0),
-                "単位":      item.get("unit", ""),
-                "単価（円）": f"¥{item.get('unit_price', 0):,}",
-                "金額（円）": f"¥{item.get('amount', 0):,}",
-                "ステータス": status,
-                "備考":      item.get("notes", "") or item.get("basis", ""),
-            })
-        st.dataframe(pd.DataFrame(df_data), use_container_width=True, hide_index=True)
-
-    confirm_items = estimation.get("confirmation_items", [])
-    if confirm_items:
-        st.warning("⚠️ 要確認事項")
-        for ci in confirm_items:
-            st.write(f"• {ci}")
+        rows = [{
+            "区分":   it.get("category", ""),
+            "工事名": it.get("item_name", ""),
+            "数量":   it.get("quantity", 0),
+            "単位":   it.get("unit", ""),
+            "単価":   f"¥{it.get('unit_price', 0):,}",
+            "金額":   f"¥{it.get('amount', 0):,}",
+            "仕様":   it.get("notes", ""),
+        } for it in items]
+        df = pd.DataFrame(rows)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.warning("明細が空です。数量フォームで面積・長さを入力してください。")
 
     st.markdown("---")
-    st.markdown("### 📥 見積書を出力")
 
-    modules = load_modules(get_api_key())
-    out_cols = st.columns(3)
+    # ── Excel出力 ────────────────────────────────────────────
+    st.subheader("📥 Excelファイル出力")
+    template_path = Path(__file__).parent / "data" / "templates" / "standard.xlsx"
 
-    with out_cols[0]:
-        if st.button("📊 Excel出力（テンプレート）", type="primary", use_container_width=True):
-            with st.spinner("Excel見積書を作成中..."):
+    if template_path.exists():
+        if st.button("📊 Excelファイルを生成する", type="primary", use_container_width=True):
+            with st.spinner("Excelを生成中…"):
                 try:
-                    company = st.session_state.get("company", {})
-                    xl_path = modules["generator"].generate_from_template(
-                        template_id=st.session_state.template_id,
-                        estimation=st.session_state.estimation,
-                        project_data=st.session_state.project_data,
-                        client_name=st.session_state.client_name,
-                        site_address=st.session_state.site_address,
-                        sales_rep=st.session_state.sales_rep,
-                        company_name=company.get("company_name", st.session_state.company_name),
-                        discount=0,
-                    )
-                    with open(xl_path, "rb") as f:
-                        st.download_button(
-                            "⬇️ Excelをダウンロード", f.read(),
-                            file_name=Path(xl_path).name,
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        )
-                    st.success("Excel見積書を作成しました")
-                except Exception as e:
-                    st.error(f"Excel出力エラー: {e}")
+                    client_name = proj.get("client_name", "顧客")
+                    safe_name   = "".join(c for c in client_name
+                                          if c.isalnum() or c in "　・ー") or "顧客"
+                    timestamp   = datetime.now().strftime("%Y%m%d_%H%M")
+                    filename    = f"見積_{safe_name}_{timestamp}.xlsx"
 
-    with out_cols[1]:
-        if st.button("📄 PDF出力（旧形式）", use_container_width=True):
-            with st.spinner("PDF見積書を作成中..."):
-                try:
-                    pdf_path = modules["generator"].generate_pdf(
-                        estimation=st.session_state.estimation,
-                        project_data=st.session_state.project_data,
-                        client_name=st.session_state.client_name,
-                        company_name=st.session_state.company_name,
-                        site_address=st.session_state.site_address,
-                    )
-                    with open(pdf_path, "rb") as f:
-                        st.download_button(
-                            "⬇️ PDFをダウンロード", f.read(),
-                            file_name=Path(pdf_path).name,
-                            mime="application/pdf",
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        output_path = Path(tmpdir) / filename
+                        fill_template(
+                            template_id="standard",
+                            template_path=template_path,
+                            output_path=output_path,
+                            estimation=estimation,
+                            project_data=st.session_state.get("image_data", {}),
+                            client_name=proj.get("client_name", ""),
+                            site_address=proj.get("site_address", ""),
+                            sales_rep=proj.get("sales_rep", ""),
+                            discount=estimation.get("discount", 0),
                         )
-                    st.success("PDF見積書を作成しました")
-                except Exception as e:
-                    st.error(f"PDF出力エラー: {e}")
+                        with open(output_path, "rb") as f:
+                            excel_bytes = f.read()
 
-    with out_cols[2]:
-        if st.button("🔄 新規案件を入力", use_container_width=True):
-            for key in list(st.session_state.keys()):
-                if key not in ("logged_in", "company", "api_key"):
-                    del st.session_state[key]
+                    st.download_button(
+                        label=f"⬇️ {filename} をダウンロード",
+                        data=excel_bytes,
+                        file_name=filename,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+                    st.success(f"✅ {filename} を生成しました！")
+
+                except Exception as e:
+                    st.error(f"Excel生成エラー: {e}")
+                    import traceback
+                    with st.expander("詳細エラー"):
+                        st.code(traceback.format_exc())
+    else:
+        st.warning("⚠️ Excelテンプレートが見つかりません")
+        st.caption(f"パス: {template_path}")
+
+    # ── アクションボタン ─────────────────────────────────────
+    st.markdown("---")
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("← 数量修正に戻る", use_container_width=True):
+            st.session_state.step = 3
+            st.rerun()
+    with b2:
+        if st.button("🆕 新しい案件を作成", type="primary", use_container_width=True):
+            for k in ["step", "project", "drawing_data", "image_data",
+                      "quantities", "estimation", "pdf_bytes",
+                      "photo_bytes_list", "voice_memo"]:
+                if k in st.session_state:
+                    del st.session_state[k]
+            st.session_state.step = 1
             st.rerun()
 
-    with st.expander("🔧 詳細データ（デバッグ用）"):
-        import json as _json
+    # ── デバッグ ─────────────────────────────────────────────
+    with st.expander("🔍 デバッグ情報"):
         st.json(estimation)
