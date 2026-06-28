@@ -5,6 +5,7 @@
 
 import hashlib
 import json
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -48,6 +49,11 @@ def init_default_accounts():
         _save_accounts(data)
 
 
+def _normalize(text: str) -> str:
+    """スマホ対応：全角→半角、大文字→小文字、前後スペース除去"""
+    return unicodedata.normalize("NFKC", text).strip().lower()
+
+
 def login(company_id: str, password: str) -> Optional[dict]:
     """
     ログイン認証。成功時は会社情報dictを返す。失敗時はNone。
@@ -55,10 +61,10 @@ def login(company_id: str, password: str) -> Optional[dict]:
     """
     init_default_accounts()
     data = _load_accounts()
-    # スマホ対応：全角→半角変換、大文字→小文字、前後スペース除去
-    import unicodedata
-    company_id = unicodedata.normalize("NFKC", company_id).strip().lower()
-    password   = unicodedata.normalize("NFKC", password).strip()
+    # IDは正規化（大文字・全角・スペース対応）
+    company_id = _normalize(company_id)
+    # パスワードは前後スペースのみ除去（大文字小文字は区別する）
+    password = unicodedata.normalize("NFKC", password).strip()
     pw_hash = _hash_password(password)
     for company in data["companies"]:
         if company["id"] == company_id and company["password_hash"] == pw_hash:
@@ -80,7 +86,6 @@ def update_company_info(company_id: str, updates: dict) -> bool:
     data = _load_accounts()
     for company in data["companies"]:
         if company["id"] == company_id:
-            # パスワードハッシュは上書きしない
             updates.pop("password_hash", None)
             updates.pop("id", None)
             company.update(updates)
@@ -145,4 +150,12 @@ def show_login_page():
                     st.session_state.company_id   = company["id"]
                     st.session_state.company_name = company.get("company_name", company_id)
                     st.rerun()
-            
+                else:
+                    st.error("会社IDまたはパスワードが間違っています")
+
+    st.caption("※ テスト用アカウント：ID = nikko　パスワード = 0000")
+
+
+def verify_password(company_id: str, password: str) -> Optional[dict]:
+    """login() の別名（後方互換）"""
+    return login(company_id, password)
