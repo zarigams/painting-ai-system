@@ -43,6 +43,8 @@ DEFAULTS = {
     "voice_extras":      {},
     "voice_raw":         {},
     "auto_done":         False,
+    "correction_history": [],
+    "last_correction":   {},
 }
 for _k, _v in DEFAULTS.items():
     if _k not in st.session_state:
@@ -75,7 +77,8 @@ with st.sidebar:
         for k in ["step", "project", "drawing_data", "image_data",
                   "quantities", "estimation", "voice_memo",
                   "voice_extras", "voice_raw", "auto_done",
-                  "pdf_bytes", "photo_bytes_list"]:
+                  "correction_history", "last_correction",
+                  "correction_input", "pdf_bytes", "photo_bytes_list"]:
             if k in st.session_state:
                 del st.session_state[k]
         st.session_state.step = 1
@@ -317,6 +320,10 @@ elif st.session_state.step == 2:
 
     # ── 自動積算 完了 → サマリー表示 ─────────────────────────
     else:
+        # 修正反映後に入力欄を空に戻す（widget生成前に値を設定する公式パターン）
+        if st.session_state.pop("_clear_correction", False):
+            st.session_state["correction_input"] = ""
+
         q      = st.session_state.quantities
         extras = st.session_state.get("voice_extras", {})
         est    = st.session_state.estimation
@@ -338,6 +345,85 @@ elif st.session_state.step == 2:
             "金額の内訳は次の見積書画面でご確認いただけます。"
         )
 
+        # ── 直近の修正結果 ────────────────────────────────────
+        last = st.session_state.get("last_correction") or {}
+        if last.get("changes"):
+            st.success("🔄 修正を反映しました：" + last.get("explanation", ""))
+            for c in last["changes"]:
+                st.write("　・ " + c["text"])
+
+        # ── 音声・テキストで修正 ──────────────────────────────
+        st.markdown("---")
+        st.subheader("🎤 修正がある場合は音声または入力で伝えてください")
+        st.caption("例：「屋根は185平米、ガードマン不要、値引き5万円」")
+
+        mc1, mc2 = st.columns([1, 1])
+        with mc1:
+            corr_audio = st.audio_input("修正を録音 →", key="corr_audio")
+            if corr_audio is not None and st.button(
+                "🎧 文字起こし（修正）", use_container_width=True):
+                with st.spinner("Whisperで文字起こし中…"):
+                    try:
+                        from modules.llm_client import LLMClient
+                        llm = LLMClient()
+                        text = llm.transcribe_audio(corr_audio.getvalue(), "correction.webm")
+                        st.session_state["correction_input"] = text
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"文字起こし失敗: {e}")
+        with mc2:
+            correction_text = st.text_area(
+                "修正内容（文字起こし結果・手入力も可）",
+                key="correction_input",
+                height=120,
+                placeholder="屋根は185平米、ガードマン不要、値引き5万円…",
+            )
+
+        if st.button("🔄 修正を反映する", use_container_width=True):
+            if not (correction_text or "").strip():
+                st.warning("修正内容を入力してください")
+            else:
+                with st.spinner("AIが修正指示を解釈中…"):
+                    try:
+                        from modules.llm_client import LLMClient
+                        from core.quantity_adjuster import adjust_quantities
+                        llm = LLMClient()
+                        result = adjust_quantities(
+                            st.session_state.quantities, correction_text, llm)
+                        if result["changes"]:
+                            st.session_state.quantities = result["quantities"]
+                            st.session_state.estimation = calculate_from_quantities(
+                                result["quantities"],
+                                client_name=proj.get("client_name", ""),
+                                site_address=proj.get("site_address", ""),
+                                sales_rep=proj.get("sales_rep", ""),
+                            )
+                            st.session_state.correction_history.append({
+                                "text":        correction_text,
+                                "explanation": result["explanation"],
+                                "changes":     result["changes"],
+                            })
+                            st.session_state.last_correction = result
+                            st.session_state["_clear_correction"] = True
+                            st.rerun()
+                        else:
+                            st.info(
+                                "変更点が見つかりませんでした"
+                                f"（{result.get('explanation', '')}）"
+                            )
+                    except Exception as e:
+                        st.error(f"修正反映エラー: {e}")
+
+        # ── 修正履歴 ──────────────────────────────────────────
+        hist = st.session_state.get("correction_history", [])
+        if hist:
+            with st.expander(f"🕑 修正履歴（{len(hist)}件）"):
+                for i, h in enumerate(hist, 1):
+                    st.markdown(f"**{i}. 「{h['text']}」**")
+                    for c in h["changes"]:
+                        st.caption("　・ " + c["text"])
+
+        st.markdown("---")
         b1, b2 = st.columns(2)
         with b1:
             if st.button("📝 詳細を確認・修正する", use_container_width=True):
@@ -617,7 +703,9 @@ elif st.session_state.step == 4:
             for k in ["step", "project", "drawing_data", "image_data",
                       "quantities", "estimation", "pdf_bytes",
                       "photo_bytes_list", "voice_memo",
-                      "voice_extras", "voice_raw", "auto_done"]:
+                      "voice_extras", "voice_raw", "auto_done",
+                      "correction_history", "last_correction",
+                      "correction_input"]:
                 if k in st.session_state:
                     del st.session_state[k]
             st.session_state.step = 1
