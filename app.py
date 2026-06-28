@@ -31,133 +31,149 @@ st.set_page_config(
 # テーマ定義
 # ─────────────────────────────────────────────────────────────
 _THEMES = {
-    "スタンダード": "",   # Streamlitデフォルトのまま
+    "スタンダード": """<style>
+/* ボタンを落ち着いたスレートブルーに */
+[data-testid="baseButton-primary"]{
+  background:#3d6b8f !important;color:#fff !important;
+  border:none !important;border-radius:6px !important;font-weight:600 !important;
+}
+[data-testid="baseButton-primary"]:hover{background:#2f5470 !important}
+[data-testid="baseButton-secondary"]{
+  background:#fff !important;color:#3d6b8f !important;
+  border:1.5px solid #3d6b8f !important;border-radius:6px !important;
+}
+[data-testid="baseButton-secondary"]:hover{background:#eef4f8 !important}
+</style>""",
 
     "ダーク": """<style>
 [data-testid="stAppViewContainer"]{background:#0d1117}
 [data-testid="stAppViewContainer"] .stMarkdown,[data-testid="stAppViewContainer"] p{color:#e6edf3}
 [data-testid="stSidebar"]{background:#161b22;border-right:1px solid #30363d}
 [data-testid="stSidebar"] *{color:#c9d1d9 !important}
-[data-testid="stTextInput"] input,[data-testid="stTextArea"] textarea{background:#21262d !important;color:#e6edf3 !important;border:1px solid #30363d !important;border-radius:6px !important}
-[data-testid="stNumberInput"] input{background:#21262d !important;color:#e6edf3 !important;border:1px solid #30363d !important}
+[data-testid="stTextInput"] input,[data-testid="stTextArea"] textarea{
+  background:#21262d !important;color:#e6edf3 !important;
+  border:1px solid #30363d !important;border-radius:6px !important}
+[data-testid="stNumberInput"] input{
+  background:#21262d !important;color:#e6edf3 !important;border:1px solid #30363d !important}
 h1{color:#58a6ff !important;font-weight:700 !important}
 h2{color:#79c0ff !important;font-weight:600 !important}
 h3{color:#cae8ff !important}
-[data-testid="baseButton-primary"]{background:linear-gradient(135deg,#238636,#2ea043) !important;color:#fff !important;border:none !important;border-radius:6px !important;font-weight:600 !important}
-[data-testid="baseButton-primary"]:hover{background:linear-gradient(135deg,#2ea043,#3fb950) !important}
-[data-testid="baseButton-secondary"]{background:#21262d !important;color:#c9d1d9 !important;border:1px solid #30363d !important;border-radius:6px !important}
+[data-testid="baseButton-primary"]{
+  background:#1f6feb !important;color:#fff !important;
+  border:none !important;border-radius:6px !important;font-weight:600 !important}
+[data-testid="baseButton-primary"]:hover{background:#388bfd !important}
+[data-testid="baseButton-secondary"]{
+  background:#21262d !important;color:#c9d1d9 !important;
+  border:1px solid #30363d !important;border-radius:6px !important}
 [data-testid="stMetric"]{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 16px}
 [data-testid="stMetricValue"]{color:#58a6ff !important;font-size:1.6rem !important}
 [data-testid="stDataFrame"] th{background:#21262d !important;color:#58a6ff !important}
 [data-testid="stDataFrame"] td{background:#0d1117 !important;color:#e6edf3 !important}
 [data-testid="stExpander"]{background:#161b22 !important;border:1px solid #30363d !important;border-radius:8px !important}
-[data-testid="stAlert"]{background:#1f2937 !important;border-radius:8px !important}
 </style>""",
 
     "サイバーパンク": """<style>
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap');
 
 [data-testid="stAppViewContainer"]{
-  background:#05000f;
+  background:#030a03;
   background-image:
-    linear-gradient(rgba(0,255,255,0.03) 1px,transparent 1px),
-    linear-gradient(90deg,rgba(0,255,255,0.03) 1px,transparent 1px);
+    linear-gradient(rgba(0,255,65,0.04) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(0,255,65,0.04) 1px,transparent 1px);
   background-size:40px 40px;
 }
 [data-testid="stAppViewContainer"] p,
-[data-testid="stAppViewContainer"] .stMarkdown{color:#d0d0e8}
+[data-testid="stAppViewContainer"] .stMarkdown{color:#a0f0a0}
 [data-testid="stSidebar"]{
-  background:linear-gradient(180deg,#0a0020 0%,#05000f 100%);
-  border-right:1px solid #ff00ff;
-  box-shadow:4px 0 20px rgba(255,0,255,0.15);
+  background:linear-gradient(180deg,#000f00 0%,#030a03 100%);
+  border-right:1px solid #00ff41;
+  box-shadow:4px 0 20px rgba(0,255,65,0.15);
 }
-[data-testid="stSidebar"] *{color:#ff00ff !important}
+[data-testid="stSidebar"] *{color:#00ff41 !important}
 
 [data-testid="stTextInput"] input,[data-testid="stTextArea"] textarea{
-  background:#0a0020 !important;color:#00ffff !important;
-  border:1px solid #ff00ff !important;border-radius:2px !important;
+  background:#000f00 !important;color:#00ff41 !important;
+  border:1px solid #00cc33 !important;border-radius:2px !important;
   font-family:'Share Tech Mono',monospace !important;
-  box-shadow:0 0 8px rgba(255,0,255,0.3) inset !important;
+  box-shadow:0 0 8px rgba(0,255,65,0.2) inset !important;
 }
 [data-testid="stNumberInput"] input{
-  background:#0a0020 !important;color:#00ffff !important;
-  border:1px solid #ff00ff !important;
+  background:#000f00 !important;color:#00ff41 !important;
+  border:1px solid #00cc33 !important;
 }
 
 h1{
   font-family:'Orbitron',monospace !important;
-  color:#00ffff !important;font-weight:900 !important;
-  text-shadow:0 0 10px #00ffff,0 0 30px rgba(0,255,255,0.5) !important;
+  color:#00ff41 !important;font-weight:900 !important;
+  text-shadow:0 0 10px #00ff41,0 0 30px rgba(0,255,65,0.4) !important;
   letter-spacing:2px;
 }
 h2{
   font-family:'Orbitron',monospace !important;
-  color:#ff00ff !important;font-weight:700 !important;
-  text-shadow:0 0 8px rgba(255,0,255,0.6) !important;
+  color:#39ff14 !important;font-weight:700 !important;
+  text-shadow:0 0 8px rgba(57,255,20,0.5) !important;
 }
 h3{
   font-family:'Orbitron',monospace !important;
-  color:#f0e040 !important;
-  text-shadow:0 0 6px rgba(240,224,64,0.5) !important;
+  color:#7fff7f !important;
+  text-shadow:0 0 6px rgba(127,255,127,0.4) !important;
 }
 
 [data-testid="baseButton-primary"]{
-  background:linear-gradient(135deg,#ff00ff,#8800ff) !important;
-  color:#fff !important;border:1px solid #ff00ff !important;
+  background:linear-gradient(135deg,#006600,#00aa00) !important;
+  color:#00ff41 !important;border:1px solid #00ff41 !important;
   border-radius:2px !important;font-weight:700 !important;
   font-family:'Orbitron',monospace !important;letter-spacing:1px;
-  box-shadow:0 0 15px rgba(255,0,255,0.5) !important;
+  box-shadow:0 0 12px rgba(0,255,65,0.4) !important;
   text-transform:uppercase;
 }
 [data-testid="baseButton-primary"]:hover{
-  box-shadow:0 0 25px rgba(255,0,255,0.8),0 0 50px rgba(255,0,255,0.3) !important;
+  background:linear-gradient(135deg,#008800,#00cc00) !important;
+  box-shadow:0 0 22px rgba(0,255,65,0.7) !important;
 }
 [data-testid="baseButton-secondary"]{
-  background:transparent !important;color:#00ffff !important;
-  border:1px solid #00ffff !important;border-radius:2px !important;
+  background:transparent !important;color:#00ff41 !important;
+  border:1px solid #00cc33 !important;border-radius:2px !important;
   font-family:'Share Tech Mono',monospace !important;
-  box-shadow:0 0 8px rgba(0,255,255,0.3) !important;
+  box-shadow:0 0 6px rgba(0,255,65,0.2) !important;
 }
 [data-testid="baseButton-secondary"]:hover{
-  box-shadow:0 0 15px rgba(0,255,255,0.6) !important;
+  box-shadow:0 0 14px rgba(0,255,65,0.5) !important;
 }
 
 [data-testid="stSidebar"] [data-testid="baseButton-secondary"]{
-  background:transparent !important;color:#ff00ff !important;
-  border:1px solid rgba(255,0,255,0.4) !important;
-  box-shadow:0 0 6px rgba(255,0,255,0.2) !important;
+  background:transparent !important;color:#00ff41 !important;
+  border:1px solid rgba(0,255,65,0.4) !important;
 }
 
 [data-testid="stMetric"]{
-  background:rgba(0,0,20,0.8);
-  border:1px solid #00ffff;border-radius:2px;padding:12px 16px;
-  box-shadow:0 0 15px rgba(0,255,255,0.15);
+  background:rgba(0,15,0,0.8);
+  border:1px solid #00ff41;border-radius:2px;padding:12px 16px;
+  box-shadow:0 0 12px rgba(0,255,65,0.12);
 }
 [data-testid="stMetricValue"]{
-  color:#f0e040 !important;font-size:1.6rem !important;
+  color:#00ff41 !important;font-size:1.6rem !important;
   font-family:'Orbitron',monospace !important;
-  text-shadow:0 0 10px rgba(240,224,64,0.7) !important;
+  text-shadow:0 0 10px rgba(0,255,65,0.6) !important;
 }
-[data-testid="stMetricLabel"]{color:#00ffff !important}
+[data-testid="stMetricLabel"]{color:#39ff14 !important}
 
 [data-testid="stDataFrame"] th{
-  background:#1a0040 !important;color:#f0e040 !important;
+  background:#001a00 !important;color:#00ff41 !important;
   font-family:'Orbitron',monospace !important;font-size:0.75rem !important;
 }
-[data-testid="stDataFrame"] td{background:#05000f !important;color:#00ffff !important}
+[data-testid="stDataFrame"] td{background:#030a03 !important;color:#7fff7f !important}
 
 [data-testid="stExpander"]{
-  background:rgba(0,0,20,0.6) !important;
-  border:1px solid rgba(255,0,255,0.4) !important;border-radius:2px !important;
+  background:rgba(0,15,0,0.6) !important;
+  border:1px solid rgba(0,255,65,0.35) !important;border-radius:2px !important;
 }
-[data-testid="stExpander"] summary{color:#ff00ff !important}
+[data-testid="stExpander"] summary{color:#00ff41 !important}
 
-[data-testid="stAlert"][data-baseweb="notification"]{
-  background:rgba(0,255,255,0.05) !important;
-  border:1px solid rgba(0,255,255,0.3) !important;border-radius:2px !important;
+[data-testid="stAlert"]{
+  background:rgba(0,255,65,0.04) !important;
+  border:1px solid rgba(0,255,65,0.3) !important;border-radius:2px !important;
 }
-.stSuccess{border-left:3px solid #00ffff !important}
-.stInfo{border-left:3px solid #ff00ff !important}
 </style>""",
 }
 
