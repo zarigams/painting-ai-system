@@ -11,12 +11,6 @@ from typing import Optional
 import openpyxl
 
 
-# ─────────────────────────────────────────────────────────────
-# 標準テンプレート（standard.xlsx）の内訳シート セルマッピング
-#
-# キー: AIが出力するitem_nameのキーワード（部分一致）
-# 値:  (行番号, 数量列D=4, 単価列F=6, 仕様列C=3)
-# ─────────────────────────────────────────────────────────────
 STANDARD_NAIYAKU_MAPPING = {
     # ── 仮設工事（行3〜10）──
     "外部足場":             (3,  True, True, False),
@@ -35,7 +29,7 @@ STANDARD_NAIYAKU_MAPPING = {
     "外壁高圧洗浄":         (24, True, True, False),
     "外壁塗装":             (25, True, True, True),
     "土台水切":             (26, True, True, True),
-    "中間水切":             (26, True, True, True),  # 土台と同じ行
+    "中間水切":             (26, True, True, True),
     "出窓天端":             (27, True, True, True),
     "化粧梁":               (28, True, True, True),
     "付梁":                 (28, True, True, True),
@@ -54,12 +48,17 @@ STANDARD_NAIYAKU_MAPPING = {
     "開口部廻りシーリング": (38, True, True, False),
     "トップライト":         (39, True, True, False),
     # ── 諸経費（行42）──
-    "諸経費":               (42, False, True, False),  # 数量は1固定・単価のみ
+    "諸経費":               (42, False, True, False),
 }
+
+# 書き込み前にD列をゼロクリアする行（テンプレートの古いデータを消す）
+_ROWS_TO_CLEAR = set(
+    mapping[0] for mapping in STANDARD_NAIYAKU_MAPPING.values()
+    if mapping[1]  # has_qty=True の行のみ
+)
 
 
 def _find_row_for_item(item_name: str) -> Optional[tuple]:
-    """item_nameのキーワードでマッピング行を探す"""
     for keyword, mapping in STANDARD_NAIYAKU_MAPPING.items():
         if keyword in item_name:
             return mapping
@@ -77,23 +76,6 @@ def fill_standard_template(
     company_name: str = "",
     discount: int = 0,
 ) -> Path:
-    """
-    標準テンプレートにAI積算結果を流し込む
-
-    Args:
-        template_path: テンプレートExcelのパス
-        output_path:   出力先パス
-        estimation:    EstimationEngineが返したdict
-        project_data:  ImageAnalyzerが返した案件情報
-        client_name:   お客様名
-        site_address:  現場住所
-        sales_rep:     担当者名
-        company_name:  受注先（発注元の会社名）
-        discount:      値引き額（マイナスで入力、例: -7000）
-
-    Returns:
-        Path: 書き込み済みファイルのパス
-    """
     import shutil
     shutil.copy2(template_path, output_path)
 
@@ -103,43 +85,40 @@ def fill_standard_template(
     ws_quote = wb["見積書"]
 
     today = datetime.now()
-    ws_quote["H1"] = today                          # 見積日
+    ws_quote["H1"] = today
     ws_quote["H1"].number_format = "yyyy年m月d日"
 
     if client_name:
-        ws_quote["A4"] = client_name                # 提出先（お客様名）
+        ws_quote["A4"] = client_name
     if site_address:
-        ws_quote["H4"] = site_address               # 現場住所
+        ws_quote["H4"] = site_address
     if client_name:
-        ws_quote["H5"] = f"{client_name}邸 外壁塗装工事"  # 工事件名
+        ws_quote["H5"] = f"{client_name}邸 外壁塗装工事"
     if sales_rep:
-        ws_quote["H8"] = sales_rep                  # 担当者
+        ws_quote["H8"] = sales_rep
 
-    # 値引き（負の数で入力）
     if discount:
         ws_quote["G18"] = discount if discount <= 0 else -abs(discount)
 
     # ── 内訳シートへの書き込み ──
     ws_naiyaku = wb["内訳"]
 
+    # ★ まず管理対象の全行のD列（数量）を0にクリア ★
+    # テンプレートの古い数値（住吉屋実績等）が残らないようにする
+    for row_num in _ROWS_TO_CLEAR:
+        ws_naiyaku.cell(row=row_num, column=4).value = 0
+
     # AI積算items → 内訳セルに書き込み
     items = estimation.get("estimation_items", [])
-
-    # すでに書き込んだ行を記録（重複防止）
     written_rows = set()
 
     for item in items:
         item_name = item.get("item_name", "")
-        category = item.get("category", "")
-        search_name = item_name + category  # 両方使って検索
-
-        mapping = _find_row_for_item(item_name) or _find_row_for_item(category)
+        mapping = _find_row_for_item(item_name) or _find_row_for_item(item.get("category", ""))
         if mapping is None:
             continue
 
         row_num, has_qty, has_price, has_spec = mapping
-
-        # 同じ行に複数itemが当たった場合は最初の1件のみ
         if row_num in written_rows:
             continue
         written_rows.add(row_num)
@@ -148,12 +127,11 @@ def fill_standard_template(
         unit_price = item.get("unit_price", 0) or 0
         spec = item.get("notes", "") or item.get("basis", "") or ""
 
-        if has_qty and qty:
-            ws_naiyaku.cell(row=row_num, column=4).value = qty     # D列: 数量
+        if has_qty:
+            ws_naiyaku.cell(row=row_num, column=4).value = qty      # 0でも書く
         if has_price and unit_price:
-            ws_naiyaku.cell(row=row_num, column=6).value = unit_price  # F列: 単価
+            ws_naiyaku.cell(row=row_num, column=6).value = unit_price
         if has_spec and spec:
-            # 仕様欄（C列）は既存の仕様を上書きしない（テンプレートの値を優先）
             existing_spec = ws_naiyaku.cell(row=row_num, column=3).value
             if not existing_spec:
                 ws_naiyaku.cell(row=row_num, column=3).value = spec
@@ -174,11 +152,6 @@ def fill_template(
     company_name: str = "",
     discount: int = 0,
 ) -> Path:
-    """
-    テンプレートIDに応じた流し込み処理を実行するディスパッチャ
-    将来的に複数テンプレートに対応するためのエントリポイント
-    """
-    # 現状は standard のみ対応。将来的にIDで分岐
     return fill_standard_template(
         template_path=template_path,
         output_path=output_path,
