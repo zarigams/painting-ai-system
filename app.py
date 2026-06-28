@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from core.auth import verify_password, show_login_page
 from core.quantity_calculator import calculate_from_quantities
-from core.template_filler import fill_template
+from core.template_filler import fill_template, fill_estimation_sheet
 
 # ─────────────────────────────────────────────────────────────
 # ページ設定
@@ -1027,6 +1027,26 @@ elif st.session_state.step == 4:
                         with open(output_path, "rb") as f:
                             excel_bytes = f.read()
 
+                        # ── 積算集計表も生成 ──
+                        est_template = template_path.parent / "estimation_sheet.xlsx"
+                        est_bytes = None
+                        est_filename = None
+                        if est_template.exists():
+                            est_filename = f"積算集計表_{safe_name}_{timestamp}.xlsx"
+                            est_output = Path(tmpdir) / est_filename
+                            fill_estimation_sheet(
+                                template_path=est_template,
+                                output_path=est_output,
+                                estimation=estimation,
+                                client_name=proj.get("client_name", ""),
+                                site_address=proj.get("site_address", ""),
+                                sales_rep=proj.get("sales_rep", ""),
+                                company_name=st.session_state.get("company_name") or "",
+                                building_type=proj.get("building_type", ""),
+                            )
+                            with open(est_output, "rb") as f:
+                                est_bytes = f.read()
+
                     st.download_button(
                         label=f"⬇️ {filename} をダウンロード",
                         data=excel_bytes,
@@ -1034,7 +1054,15 @@ elif st.session_state.step == 4:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                     )
-                    st.success(f"✅ {filename} を生成しました！")
+                    if est_bytes and est_filename:
+                        st.download_button(
+                            label=f"⬇️ {est_filename} をダウンロード",
+                            data=est_bytes,
+                            file_name=est_filename,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                        )
+                    st.success(f"✅ 見積書・積算集計表を生成しました！")
 
                 except Exception as e:
                     st.error(f"Excel生成エラー: {e}")
