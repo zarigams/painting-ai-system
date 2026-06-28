@@ -3,6 +3,8 @@
 AIの積算結果をExcelテンプレートの特定セルに書き込む。
 計算式（数量×単価=金額 等）はテンプレートのままで保持する。
 """
+# redeploy: 2026-06-28 fill_estimation_sheet import 修正 (stale deploy対策)
+
 
 from datetime import datetime
 from pathlib import Path
