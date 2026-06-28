@@ -45,6 +45,8 @@ DEFAULTS = {
     "auto_done":         False,
     "correction_history": [],
     "last_correction":   {},
+    "estimation_rules":  "",
+    "extra_options":     {},
 }
 for _k, _v in DEFAULTS.items():
     if _k not in st.session_state:
@@ -83,6 +85,20 @@ with st.sidebar:
                 del st.session_state[k]
         st.session_state.step = 1
         st.rerun()
+    with st.expander("⚙️ 積算ルール設定"):
+        st.caption("GPTへの追加指示（例：足場は外周×高さで計算、シーリングは外壁×1.6）")
+        rules_input = st.text_area(
+            "カスタム積算ルール",
+            value=st.session_state.estimation_rules,
+            height=120,
+            placeholder="例）\n・足場は外周×高さで計算すること\n・シーリングは外壁×1.6mを目安にすること\n・土台水切は建物1周の長さで計算すること",
+            key="rules_sidebar",
+        )
+        if st.button("💾 ルールを保存", use_container_width=True, key="save_rules"):
+            st.session_state.estimation_rules = rules_input
+            st.success("保存しました")
+    st.markdown("---")
+
     if st.button("🚪 ログアウト", use_container_width=True):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
@@ -164,6 +180,42 @@ if st.session_state.step == 1:
                             min_value=1, max_value=10, value=2, step=1)
         building_area   = bc3.number_input("建築面積（㎡）",
                             min_value=0.0, value=0.0, step=1.0)
+
+    with st.expander("🔧 工事オプション（任意）"):
+        st.caption("音声で言い忘れた項目をここで追加できます")
+        eo = st.session_state.extra_options
+        oc1, oc2, oc3 = st.columns(3)
+        with oc1:
+            opt_guardman    = st.number_input("ガードマン（人）", min_value=0,
+                                value=int(eo.get("guardman_count", 0)), step=1)
+            opt_window_top  = st.number_input("出窓天端（m）", min_value=0.0,
+                                value=float(eo.get("window_top_length", 0)), step=0.5)
+            opt_beam        = st.number_input("化粧梁・付梁（m）", min_value=0.0,
+                                value=float(eo.get("beam_length", 0)), step=0.5)
+        with oc2:
+            opt_shutter     = st.number_input("シャッターボックス（m）", min_value=0.0,
+                                value=float(eo.get("shutter_box_length", 0)), step=0.5)
+            opt_soffit_sqm  = st.number_input("軒天（玄関・バルコニー ㎡）", min_value=0.0,
+                                value=float(eo.get("soffit_sqm", 0)), step=0.5)
+            opt_skylight    = st.number_input("トップライト（箇所）", min_value=0,
+                                value=int(eo.get("skylight_count", 0)), step=1)
+        with oc3:
+            opt_protection  = st.checkbox("防護管設置", value=eo.get("do_protection_pipe", False))
+            opt_carport     = st.checkbox("カーポート・バルコニー屋根脱着",
+                                value=eo.get("do_carport", False))
+            opt_foundation  = st.checkbox("基礎塗装", value=eo.get("do_foundation", False))
+        # オプションをセッションに保存（ボタン押下前でも）
+        st.session_state.extra_options = {
+            "guardman_count":     opt_guardman,
+            "window_top_length":  opt_window_top,
+            "beam_length":        opt_beam,
+            "shutter_box_length": opt_shutter,
+            "soffit_sqm":         opt_soffit_sqm,
+            "skylight_count":     opt_skylight,
+            "do_protection_pipe": opt_protection,
+            "do_carport":         opt_carport,
+            "do_foundation":      opt_foundation,
+        }
 
     st.markdown("---")
     if st.button("🚀 見積もりを作成する", type="primary", use_container_width=True):
@@ -270,7 +322,8 @@ elif st.session_state.step == 2:
 
                     extras, raw = {}, {}
                     if has_voice:
-                        result    = extract_quantities(voice_text, llm)
+                        custom_rules = st.session_state.get("estimation_rules", "")
+                        result    = extract_quantities(voice_text, llm, custom_rules=custom_rules)
                         quantities = result["quantities"]
                         extras     = result["extras"]
                         raw        = result["raw"]
@@ -292,6 +345,27 @@ elif st.session_state.step == 2:
                         image_data = ia.analyze(st.session_state.photo_bytes_list, desc)
                         st.session_state.image_data = image_data
                         quantities = _merge_photo(quantities, image_data)
+
+                    # extra_options（工事オプション欄）で上書き
+                    eo = st.session_state.get("extra_options", {})
+                    if eo.get("guardman_count", 0):
+                        quantities["guardman_count"]    = eo["guardman_count"]
+                    if eo.get("window_top_length", 0):
+                        quantities["window_top_length"] = eo["window_top_length"]
+                    if eo.get("beam_length", 0):
+                        quantities["beam_length"]       = eo["beam_length"]
+                    if eo.get("shutter_box_length", 0):
+                        quantities["shutter_box_length"]= eo["shutter_box_length"]
+                    if eo.get("soffit_sqm", 0):
+                        quantities["soffit_sqm"]        = eo["soffit_sqm"]
+                    if eo.get("skylight_count", 0):
+                        quantities["skylight_count"]    = eo["skylight_count"]
+                    if eo.get("do_protection_pipe"):
+                        quantities["do_protection_pipe"]= True
+                    if eo.get("do_carport"):
+                        quantities["do_carport"]        = True
+                    if eo.get("do_foundation"):
+                        quantities["do_foundation"]     = True
 
                     st.session_state.quantities   = quantities
                     st.session_state.voice_extras = extras

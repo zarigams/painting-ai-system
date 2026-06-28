@@ -87,12 +87,15 @@ def _to_float(v) -> Optional[float]:
         return None
 
 
-def _extract_raw(voice_text: str, llm) -> dict:
+def _extract_raw(voice_text: str, llm, custom_rules: str = "") -> dict:
+    system_prompt = _EXTRACT_SYSTEM_PROMPT
+    if custom_rules and custom_rules.strip():
+        system_prompt += f"\n\n【会社カスタム積算ルール】\n{custom_rules.strip()}"
     user_message = f"{_EXTRACT_SCHEMA_HINT}\n\nテキスト：「{voice_text}」"
     resp = llm.client.chat.completions.create(
         model=llm.model,
         messages=[
-            {"role": "system", "content": _EXTRACT_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
         ],
         max_tokens=1500,
@@ -168,8 +171,8 @@ def build_quantities(raw: dict) -> dict:
     return quantities
 
 
-def extract_quantities(voice_text: str, llm) -> dict:
-    raw = _extract_raw(voice_text, llm)
+def extract_quantities(voice_text: str, llm, custom_rules: str = "") -> dict:
+    raw = _extract_raw(voice_text, llm, custom_rules=custom_rules)
     quantities = build_quantities(raw)
     extras = {
         "client_name":  raw.get("client_name"),
