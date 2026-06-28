@@ -49,6 +49,7 @@ DEFAULTS = {
     "extra_options":     {},
     "unit_prices":           {},
     "show_price_settings":   False,
+    "theme":                 "プロ向け（シンプル）",
 }
 for _k, _v in DEFAULTS.items():
     if _k not in st.session_state:
@@ -106,10 +107,25 @@ with st.sidebar:
         st.session_state.show_price_settings = not st.session_state.get("show_price_settings", False)
     st.markdown("---")
 
+    st.markdown("**🎨 テーマ**")
+    selected_theme = st.radio(
+        "テーマ選択",
+        list(_THEMES.keys()),
+        index=list(_THEMES.keys()).index(st.session_state.get("theme", "プロ向け（シンプル）")),
+        key="theme_radio",
+        label_visibility="collapsed",
+    )
+    if selected_theme != st.session_state.get("theme"):
+        st.session_state.theme = selected_theme
+        st.rerun()
+    st.markdown("---")
+
     if st.button("🚪 ログアウト", use_container_width=True):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.rerun()
+
+_apply_theme(st.session_state.get("theme", "プロ向け（シンプル）"))
 
 st.title("🏠 AI塗装積算システム")
 
