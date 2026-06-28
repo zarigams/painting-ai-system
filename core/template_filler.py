@@ -90,6 +90,7 @@ def fill_standard_template(
 
     if client_name:
         ws_quote["A4"] = client_name
+    ws_quote["B5"] = ""  # サンプル残骸「吉田」をクリア
     if site_address:
         ws_quote["H4"] = site_address
     if client_name:
