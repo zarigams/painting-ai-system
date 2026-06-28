@@ -51,9 +51,14 @@ def init_default_accounts():
 def login(company_id: str, password: str) -> Optional[dict]:
     """
     ログイン認証。成功時は会社情報dictを返す。失敗時はNone。
+    スマホキーボードの大文字化・全角・末尾スペースに対応。
     """
     init_default_accounts()
     data = _load_accounts()
+    # スマホ対応：全角→半角変換、大文字→小文字、前後スペース除去
+    import unicodedata
+    company_id = unicodedata.normalize("NFKC", company_id).strip().lower()
+    password   = unicodedata.normalize("NFKC", password).strip()
     pw_hash = _hash_password(password)
     for company in data["companies"]:
         if company["id"] == company_id and company["password_hash"] == pw_hash:
@@ -140,12 +145,4 @@ def show_login_page():
                     st.session_state.company_id   = company["id"]
                     st.session_state.company_name = company.get("company_name", company_id)
                     st.rerun()
-                else:
-                    st.error("会社IDまたはパスワードが間違っています")
-
-    st.caption("※ テスト用アカウント：ID = nikko　パスワード = 0000")
-
-
-def verify_password(company_id: str, password: str) -> Optional[dict]:
-    """login() の別名（後方互換）"""
-    return login(company_id, password)
+            
