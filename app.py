@@ -86,108 +86,108 @@ button[kind="secondary"]{
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap');
 
 [data-testid="stAppViewContainer"]{
-  background:#030a03;
+  background:#00080f;
   background-image:
-    linear-gradient(rgba(0,255,65,0.04) 1px,transparent 1px),
-    linear-gradient(90deg,rgba(0,255,65,0.04) 1px,transparent 1px);
+    linear-gradient(rgba(0,255,255,0.04) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(0,255,255,0.04) 1px,transparent 1px);
   background-size:40px 40px;
 }
 [data-testid="stAppViewContainer"] p,
 [data-testid="stAppViewContainer"] .stMarkdown{color:#a0f0a0}
 [data-testid="stSidebar"]{
-  background:linear-gradient(180deg,#000f00 0%,#030a03 100%);
-  border-right:1px solid #00ff41;
-  box-shadow:4px 0 20px rgba(0,255,65,0.15);
+  background:linear-gradient(180deg,#00050f 0%,#00080f 100%);
+  border-right:1px solid #00ffff;
+  box-shadow:4px 0 20px rgba(0,255,255,0.15);
 }
-[data-testid="stSidebar"] *{color:#00ff41 !important}
+[data-testid="stSidebar"] *{color:#00ffff !important}
 
 [data-testid="stTextInput"] input,[data-testid="stTextArea"] textarea{
-  background:#000f00 !important;color:#00ff41 !important;
-  border:1px solid #00cc33 !important;border-radius:2px !important;
+  background:#00050f !important;color:#00ffff !important;
+  border:1px solid #00cccc !important;border-radius:2px !important;
   font-family:'Share Tech Mono',monospace !important;
-  box-shadow:0 0 8px rgba(0,255,65,0.2) inset !important;
+  box-shadow:0 0 8px rgba(0,255,255,0.2) inset !important;
 }
 [data-testid="stNumberInput"] input{
-  background:#000f00 !important;color:#00ff41 !important;
-  border:1px solid #00cc33 !important;
+  background:#00050f !important;color:#00ffff !important;
+  border:1px solid #00cccc !important;
 }
 
 h1{
   font-family:'Orbitron',monospace !important;
-  color:#00ff41 !important;font-weight:900 !important;
-  text-shadow:0 0 10px #00ff41,0 0 30px rgba(0,255,65,0.4) !important;
+  color:#00ffff !important;font-weight:900 !important;
+  text-shadow:0 0 10px #00ffff,0 0 30px rgba(0,255,255,0.4) !important;
   letter-spacing:2px;
 }
 h2{
   font-family:'Orbitron',monospace !important;
-  color:#39ff14 !important;font-weight:700 !important;
-  text-shadow:0 0 8px rgba(57,255,20,0.5) !important;
+  color:#00e5ff !important;font-weight:700 !important;
+  text-shadow:0 0 8px rgba(0,229,255,0.5) !important;
 }
 h3{
   font-family:'Orbitron',monospace !important;
-  color:#7fff7f !important;
-  text-shadow:0 0 6px rgba(127,255,127,0.4) !important;
+  color:#7fffff !important;
+  text-shadow:0 0 6px rgba(127,255,255,0.4) !important;
 }
 
 [data-testid="baseButton-primary"],
 button[kind="primary"],
 .stButton > button[kind="primary"],
 .stForm button[type="submit"]{
-  background:linear-gradient(135deg,#006600,#00aa00) !important;
-  color:#00ff41 !important;border:1px solid #00ff41 !important;
+  background:linear-gradient(135deg,#006666,#00aaaa) !important;
+  color:#00ffff !important;border:1px solid #00ffff !important;
   border-radius:2px !important;font-weight:700 !important;
   font-family:'Orbitron',monospace !important;letter-spacing:1px;
-  box-shadow:0 0 12px rgba(0,255,65,0.4) !important;
+  box-shadow:0 0 12px rgba(0,255,255,0.4) !important;
   text-transform:uppercase;
 }
 [data-testid="baseButton-primary"]:hover,
 button[kind="primary"]:hover{
-  background:linear-gradient(135deg,#008800,#00cc00) !important;
-  box-shadow:0 0 22px rgba(0,255,65,0.7) !important;
+  background:linear-gradient(135deg,#008888,#00cccc) !important;
+  box-shadow:0 0 22px rgba(0,255,255,0.7) !important;
 }
 [data-testid="baseButton-secondary"],
 button[kind="secondary"]{
-  background:transparent !important;color:#00ff41 !important;
-  border:1px solid #00cc33 !important;border-radius:2px !important;
+  background:transparent !important;color:#00ffff !important;
+  border:1px solid #00cccc !important;border-radius:2px !important;
   font-family:'Share Tech Mono',monospace !important;
-  box-shadow:0 0 6px rgba(0,255,65,0.2) !important;
+  box-shadow:0 0 6px rgba(0,255,255,0.2) !important;
 }
 [data-testid="baseButton-secondary"]:hover{
-  box-shadow:0 0 14px rgba(0,255,65,0.5) !important;
+  box-shadow:0 0 14px rgba(0,255,255,0.5) !important;
 }
 
 [data-testid="stSidebar"] [data-testid="baseButton-secondary"]{
-  background:transparent !important;color:#00ff41 !important;
-  border:1px solid rgba(0,255,65,0.4) !important;
+  background:transparent !important;color:#00ffff !important;
+  border:1px solid rgba(0,255,255,0.4) !important;
 }
 
 [data-testid="stMetric"]{
-  background:rgba(0,15,0,0.8);
-  border:1px solid #00ff41;border-radius:2px;padding:12px 16px;
-  box-shadow:0 0 12px rgba(0,255,65,0.12);
+  background:rgba(0,8,15,0.8);
+  border:1px solid #00ffff;border-radius:2px;padding:12px 16px;
+  box-shadow:0 0 12px rgba(0,255,255,0.12);
 }
 [data-testid="stMetricValue"]{
-  color:#00ff41 !important;font-size:1.6rem !important;
+  color:#00ffff !important;font-size:1.6rem !important;
   font-family:'Orbitron',monospace !important;
-  text-shadow:0 0 10px rgba(0,255,65,0.6) !important;
+  text-shadow:0 0 10px rgba(0,255,255,0.6) !important;
 }
-[data-testid="stMetricLabel"]{color:#39ff14 !important}
+[data-testid="stMetricLabel"]{color:#00e5ff !important}
 
 [data-testid="stDataFrame"] th{
-  background:#001a00 !important;color:#00ff41 !important;
+  background:#001a1a !important;color:#00ffff !important;
   font-family:'Orbitron',monospace !important;font-size:0.75rem !important;
 }
-[data-testid="stDataFrame"] td{background:#030a03 !important;color:#7fff7f !important}
+[data-testid="stDataFrame"] td{background:#00080f !important;color:#7fffff !important}
 
 [data-testid="stExpander"]{
-  background:rgba(0,15,0,0.6) !important;
-  border:1px solid rgba(0,255,65,0.35) !important;border-radius:2px !important;
+  background:rgba(0,8,15,0.6) !important;
+  border:1px solid rgba(0,255,255,0.35) !important;border-radius:2px !important;
 }
-[data-testid="stExpander"] summary{color:#00ff41 !important}
+[data-testid="stExpander"] summary{color:#00ffff !important}
 
 [data-testid="stAlert"]{
-  background:rgba(0,255,65,0.04) !important;
-  border:1px solid rgba(0,255,65,0.3) !important;border-radius:2px !important;
+  background:rgba(0,255,255,0.04) !important;
+  border:1px solid rgba(0,255,255,0.3) !important;border-radius:2px !important;
 }
 </style>""",
 }
