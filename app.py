@@ -85,6 +85,7 @@ button[kind="secondary"]{
     "サイバーパンク": """<style>
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap');
 
+/* ── ベース ── */
 [data-testid="stAppViewContainer"]{
   background:#00080f;
   font-family:'Rajdhani',sans-serif !important;
@@ -93,30 +94,39 @@ button[kind="secondary"]{
     linear-gradient(90deg,rgba(0,255,255,0.04) 1px,transparent 1px);
   background-size:40px 40px;
 }
+
+/* ── 本文テキスト（spanを外してh1サイズを守る）── */
 [data-testid="stAppViewContainer"] p,
 [data-testid="stAppViewContainer"] .stMarkdown,
 [data-testid="stAppViewContainer"] label,
-[data-testid="stAppViewContainer"] .stSelectbox,
-[data-testid="stAppViewContainer"] .stRadio,
-[data-testid="stAppViewContainer"] span{
+[data-testid="stAppViewContainer"] .stSelectbox div,
+[data-testid="stAppViewContainer"] .stRadio div{
   color:#7fffff;
   font-family:'Rajdhani',sans-serif !important;
   font-size:1.05rem;
   letter-spacing:0.5px;
 }
+
+/* ── サイドバー（* を使わず具体的に指定）── */
 [data-testid="stSidebar"]{
   background:linear-gradient(180deg,#00050f 0%,#00080f 100%);
   border-right:1px solid #00ffff;
   box-shadow:4px 0 20px rgba(0,255,255,0.15);
+  font-family:'Rajdhani',sans-serif !important;
 }
-[data-testid="stSidebar"] *{color:#00ffff !important}
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] span,
+[data-testid="stSidebar"] div,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] a { color:#00ffff !important; }
 
-[data-testid="stTextInput"] input,[data-testid="stTextArea"] textarea{
+/* ── 入力フィールド ── */
+[data-testid="stTextInput"] input,
+[data-testid="stTextArea"] textarea{
   background:#00050f !important;color:#00ffff !important;
   border:1px solid #00cccc !important;border-radius:2px !important;
   font-family:'Share Tech Mono',monospace !important;
-  font-size:1rem !important;
-  letter-spacing:1px !important;
+  font-size:1rem !important;letter-spacing:1px !important;
   box-shadow:0 0 8px rgba(0,255,255,0.2) inset !important;
 }
 [data-testid="stNumberInput"] input{
@@ -124,23 +134,28 @@ button[kind="secondary"]{
   border:1px solid #00cccc !important;
 }
 
+/* ── 見出し（font-sizeはStreamlitデフォルト維持）── */
 h1{
   font-family:'Orbitron',monospace !important;
   color:#00ffff !important;font-weight:900 !important;
   text-shadow:0 0 10px #00ffff,0 0 30px rgba(0,255,255,0.4) !important;
   letter-spacing:2px;
+  font-size:2.5rem !important;
 }
 h2{
   font-family:'Orbitron',monospace !important;
   color:#00e5ff !important;font-weight:700 !important;
   text-shadow:0 0 8px rgba(0,229,255,0.5) !important;
+  font-size:1.8rem !important;
 }
 h3{
   font-family:'Orbitron',monospace !important;
   color:#7fffff !important;
   text-shadow:0 0 6px rgba(127,255,255,0.4) !important;
+  font-size:1.3rem !important;
 }
 
+/* ── ボタン ── */
 [data-testid="baseButton-primary"],
 button[kind="primary"],
 .stButton > button[kind="primary"],
@@ -164,15 +179,12 @@ button[kind="secondary"]{
   font-family:'Share Tech Mono',monospace !important;
   box-shadow:0 0 6px rgba(0,255,255,0.2) !important;
 }
-[data-testid="baseButton-secondary"]:hover{
-  box-shadow:0 0 14px rgba(0,255,255,0.5) !important;
-}
-
 [data-testid="stSidebar"] [data-testid="baseButton-secondary"]{
   background:transparent !important;color:#00ffff !important;
   border:1px solid rgba(0,255,255,0.4) !important;
 }
 
+/* ── メトリクス ── */
 [data-testid="stMetric"]{
   background:rgba(0,8,15,0.8);
   border:1px solid #00ffff;border-radius:2px;padding:12px 16px;
@@ -183,38 +195,29 @@ button[kind="secondary"]{
   font-family:'Orbitron',monospace !important;
   text-shadow:0 0 10px rgba(0,255,255,0.6) !important;
 }
-[data-testid="stMetricLabel"]{color:#00e5ff !important}
-
-[data-testid="stDataFrame"] th{
-  background:#001a1a !important;color:#00ffff !important;
-  font-family:'Orbitron',monospace !important;font-size:0.75rem !important;
-}
-[data-testid="stDataFrame"] td{background:#00080f !important;color:#7fffff !important}
-
-[data-testid="stExpander"]{
-  background:rgba(0,8,15,0.6) !important;
-  border:1px solid rgba(0,255,255,0.35) !important;border-radius:2px !important;
-}
-[data-testid="stExpander"] summary{color:#00ffff !important}
-
-[data-testid="stAlert"]{
-  background:rgba(0,255,255,0.04) !important;
-  border:1px solid rgba(0,255,255,0.3) !important;border-radius:2px !important;
-}
-/* キャプション・ラベル */
-[data-testid="stCaptionContainer"],
-[data-testid="stMarkdownContainer"] small{
-  font-family:'Rajdhani',sans-serif !important;
-  color:#00cccc !important;letter-spacing:0.5px;
-}
-/* メトリクスラベル */
 [data-testid="stMetricLabel"]{
   font-family:'Orbitron',monospace !important;
   font-size:0.7rem !important;letter-spacing:2px;color:#00cccc !important;
 }
-/* テーブル本文 */
+
+/* ── テーブル ── */
+[data-testid="stDataFrame"] th{
+  background:#001a1a !important;color:#00ffff !important;
+  font-family:'Orbitron',monospace !important;font-size:0.75rem !important;
+}
 [data-testid="stDataFrame"] td{
+  background:#00080f !important;color:#7fffff !important;
   font-family:'Share Tech Mono',monospace !important;font-size:0.85rem !important;
+}
+
+/* ── エクスパンダー・アラート ── */
+[data-testid="stExpander"]{
+  background:rgba(0,8,15,0.6) !important;
+  border:1px solid rgba(0,255,255,0.35) !important;border-radius:2px !important;
+}
+[data-testid="stAlert"]{
+  background:rgba(0,255,255,0.04) !important;
+  border:1px solid rgba(0,255,255,0.3) !important;border-radius:2px !important;
 }
 </style>""",
 }
