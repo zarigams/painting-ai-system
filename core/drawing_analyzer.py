@@ -76,8 +76,8 @@ class DrawingAnalyzer:
         if not images:
             return {"error": "PDFのページが読み取れませんでした"}
 
-        # 最初の3ページまで送信（A1図面でも十分）
-        target_images = images[:3]
+        # 全ページ送信（立面図が後半にある場合も対応）
+        target_images = images[:6]
 
         content = [
             {
