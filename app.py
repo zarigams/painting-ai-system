@@ -711,19 +711,43 @@ elif st.session_state.step == 2:
         est    = st.session_state.estimation
         st.success("✅ 自動積算が完了しました！内容をご確認ください。")
 
-        cc1, cc2, cc3 = st.columns(3)
-        cc1.metric("外壁面積",      f"{q.get('wall_area', 0)} ㎡")
-        cc2.metric("屋根面積",      f"{q.get('roof_area', 0)} ㎡")
-        cc3.metric("合計（税込）",  f"¥{est.get('total', 0):,}")
-        sc1, sc2, sc3 = st.columns(3)
-        sc1.metric("外部足場",       f"{q.get('scaffold_area', 0)} ㎡")
-        sc2.metric("破風 / 軒天",    f"{q.get('fascia_length', 0)} / {q.get('soffit_length', 0)} m")
-        sc3.metric("目地シーリング", f"{q.get('joint_seal_length', 0)} m")
+        # ── 合計表示 ────────────────────────────────────────
+        st.metric("合計（税込）", f"¥{est.get('total', 0):,}")
+
+        # ── 数値直接編集フォーム ──────────────────────────────
+        st.caption("📝 数値を直接編集できます。変更後「再計算」を押してください")
+        ec1, ec2, ec3 = st.columns(3)
+        edit_wall   = ec1.number_input("外壁面積（㎡）",      min_value=0.0, value=float(q.get("wall_area", 0)),         step=1.0)
+        edit_roof   = ec2.number_input("屋根面積（㎡）",      min_value=0.0, value=float(q.get("roof_area", 0)),         step=1.0)
+        edit_fascia = ec3.number_input("破風（m）",           min_value=0.0, value=float(q.get("fascia_length", 0)),     step=0.5)
+        ec4, ec5, ec6 = st.columns(3)
+        edit_soffit = ec4.number_input("軒天（m）",           min_value=0.0, value=float(q.get("soffit_length", 0)),     step=0.5)
+        edit_gutter = ec5.number_input("雨樋（m）",           min_value=0.0, value=float(q.get("gutter_length", 0)),     step=0.5)
+        edit_joint  = ec6.number_input("目地シーリング（m）", min_value=0.0, value=float(q.get("joint_seal_length", 0)), step=0.5)
+
+        if st.button("🔄 再計算する", type="primary", use_container_width=True):
+            q["wall_area"]         = edit_wall
+            q["roof_area"]         = edit_roof
+            q["fascia_length"]     = edit_fascia
+            q["soffit_length"]     = edit_soffit
+            q["gutter_length"]     = edit_gutter
+            q["joint_seal_length"] = edit_joint
+            q["scaffold_area"]     = round(edit_wall * 1.1, 1)
+            if edit_wall > 0 and edit_roof > 0:
+                q["roof_scaffold_area"] = edit_roof
+            st.session_state.quantities = q
+            st.session_state.estimation = calculate_from_quantities(
+                q,
+                client_name=proj.get("client_name", ""),
+                site_address=proj.get("site_address", ""),
+                sales_rep=proj.get("sales_rep", ""),
+            )
+            st.rerun()
 
         if extras.get("notes"):
             st.info(f"📝 音声メモ補足: {extras['notes']}")
         st.caption(
-            "※ 足場・軒天・シーリング等の未入力項目は塗装業の経験則で自動補完しています。"
+            "※ 足場・シーリング等の未入力項目は塗装業の経験則で自動補完しています。"
             "金額の内訳は次の見積書画面でご確認いただけます。"
         )
 
