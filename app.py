@@ -47,6 +47,7 @@ DEFAULTS = {
     "last_correction":   {},
     "estimation_rules":  "",
     "extra_options":     {},
+    "unit_prices":       {},
 }
 for _k, _v in DEFAULTS.items():
     if _k not in st.session_state:
@@ -96,7 +97,48 @@ with st.sidebar:
         )
         if st.button("💾 ルールを保存", use_container_width=True, key="save_rules"):
             st.session_state.estimation_rules = rules_input
+            from core.auth import save_estimation_rules
+            save_estimation_rules(st.session_state.company_id, rules_input)
             st.success("保存しました")
+
+    from core.quantity_calculator import UNIT_PRICES as _DEFAULT_PRICES
+    _current_prices = st.session_state.get("unit_prices") or dict(_DEFAULT_PRICES)
+
+    with st.expander("💰 単価設定"):
+        st.caption("工事種別ごとの単価を変更できます（円）")
+        _price_labels = {
+            "外部足場":     ("外部足場（㎡）", "仮設"),
+            "屋根足場":     ("屋根足場（㎡）", "仮設"),
+            "ガードマン":   ("ガードマン（人）", "仮設"),
+            "防護管":       ("防護管（式）", "仮設"),
+            "屋根塗装":     ("屋根塗装（㎡）", "屋根"),
+            "外壁塗装":     ("外壁塗装（㎡）", "外壁"),
+            "破風鼻隠し塗装": ("破風・鼻隠し（m）", "付帯"),
+            "軒天塗装_m":   ("軒天（m）", "付帯"),
+            "雨樋塗装":     ("雨樋（m）", "付帯"),
+            "土台水切塗装": ("土台水切（m）", "付帯"),
+            "シャッターボックス": ("シャッターボックス（m）", "付帯"),
+            "基礎塗装":     ("基礎塗装（式）", "付帯"),
+            "目地シーリング": ("目地シーリング（m）", "シーリング"),
+            "雑シーリング": ("雑シーリング（式）", "シーリング"),
+            "諸経費":       ("諸経費（式）", "諸経費"),
+        }
+        _new_prices = dict(_current_prices)
+        _prev_cat = ""
+        for key, (label, cat) in _price_labels.items():
+            if cat != _prev_cat:
+                st.markdown(f"**{cat}**")
+                _prev_cat = cat
+            _new_prices[key] = st.number_input(
+                label, min_value=0,
+                value=int(_current_prices.get(key, _DEFAULT_PRICES.get(key, 0))),
+                step=100, key=f"price_{key}",
+            )
+        if st.button("💾 単価を保存", use_container_width=True, key="save_prices"):
+            st.session_state.unit_prices = _new_prices
+            from core.auth import save_unit_prices
+            save_unit_prices(st.session_state.company_id, _new_prices)
+            st.success("単価を保存しました")
     st.markdown("---")
 
     if st.button("🚪 ログアウト", use_container_width=True):

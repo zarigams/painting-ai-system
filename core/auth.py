@@ -159,3 +159,43 @@ def show_login_page():
 def verify_password(company_id: str, password: str) -> Optional[dict]:
     """login() の別名（後方互換）"""
     return login(company_id, password)
+
+def get_unit_prices(company_id: str) -> dict:
+    """会社ごとのカスタム単価を取得。未設定ならデフォルト値を返す。"""
+    from core.quantity_calculator import UNIT_PRICES as DEFAULT_PRICES
+    data = _load_accounts()
+    for company in data["companies"]:
+        if company["id"] == company_id:
+            return company.get("unit_prices", dict(DEFAULT_PRICES))
+    return dict(DEFAULT_PRICES)
+
+
+def save_unit_prices(company_id: str, prices: dict) -> bool:
+    """会社ごとのカスタム単価を保存する。"""
+    data = _load_accounts()
+    for company in data["companies"]:
+        if company["id"] == company_id:
+            company["unit_prices"] = prices
+            _save_accounts(data)
+            return True
+    return False
+
+
+def save_estimation_rules(company_id: str, rules: str) -> bool:
+    """会社ごとの積算カスタムルールを保存する。"""
+    data = _load_accounts()
+    for company in data["companies"]:
+        if company["id"] == company_id:
+            company["estimation_rules"] = rules
+            _save_accounts(data)
+            return True
+    return False
+
+
+def get_estimation_rules(company_id: str) -> str:
+    """会社ごとの積算カスタムルールを取得する。"""
+    data = _load_accounts()
+    for company in data["companies"]:
+        if company["id"] == company_id:
+            return company.get("estimation_rules", "")
+    return ""

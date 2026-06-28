@@ -62,6 +62,7 @@ def calculate_from_quantities(
     client_name: str = "",
     site_address: str = "",
     sales_rep: str = "",
+    custom_prices: dict = None,
 ) -> dict:
     """
     数量フォームデータから積算明細を計算する
@@ -77,7 +78,9 @@ def calculate_from_quantities(
     """
     q = quantities
     items = []
-    UP = UNIT_PRICES
+    UP = dict(UNIT_PRICES)
+    if custom_prices:
+        UP.update(custom_prices)
 
     # ─── 仮設工事 ──────────────────────────────────────────
     if q.get("scaffold_area", 0) > 0:
