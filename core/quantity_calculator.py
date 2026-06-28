@@ -14,6 +14,7 @@ UNIT_PRICES = {
     "道路使用許可":       15000,  # 式
     "ガードマン":         24000,  # 人
     "防護管":             80000,  # 式
+    "カーポート脱着":     50000,  # 式
     # 屋根塗装
     "屋根高圧洗浄":       200,    # ㎡
     "屋根板金塗装":       38000,  # 式
@@ -110,6 +111,8 @@ def calculate_from_quantities(
         ))
     if q.get("do_protection_pipe", False):
         items.append(_item("仮設工事", "防護管設置費用", 1, "式", UP["防護管"]))
+    if q.get("do_carport", False):
+        items.append(_item("仮設工事", "カーポート・バルコニー屋根脱着", 1, "式", UP["カーポート脱着"]))
 
     # ─── 塗装工事（屋根） ──────────────────────────────────
     if q.get("do_roof", True) and q.get("roof_area", 0) > 0:
