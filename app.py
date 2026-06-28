@@ -725,16 +725,40 @@ elif st.session_state.step == 2:
         edit_gutter = ec5.number_input("雨樋（m）",           min_value=0.0, value=float(q.get("gutter_length", 0)),     step=0.5)
         edit_joint  = ec6.number_input("目地シーリング（m）", min_value=0.0, value=float(q.get("joint_seal_length", 0)), step=0.5)
 
+        # ── 工事オプション ────────────────────────────────────
+        st.markdown("**🔧 工事オプション**")
+        oc1, oc2, oc3 = st.columns(3)
+        edit_guardman  = oc1.number_input("ガードマン（人）",     min_value=0,   value=int(q.get("guardman_count", 0)),     step=1)
+        edit_discount  = oc2.number_input("値引き（円）",         min_value=0,   value=int(q.get("discount", 0)),           step=10000)
+        edit_window_top= oc3.number_input("出窓天端（m）",        min_value=0.0, value=float(q.get("window_top_length", 0)), step=0.5)
+        oc4, oc5, oc6 = st.columns(3)
+        edit_beam      = oc4.number_input("化粧梁（m）",          min_value=0.0, value=float(q.get("beam_length", 0)),      step=0.5)
+        edit_shutter   = oc5.number_input("シャッターBOX（m）",   min_value=0.0, value=float(q.get("shutter_box_length", 0)), step=0.5)
+        edit_skylight  = oc6.number_input("トップライト（箇所）", min_value=0,   value=int(q.get("skylight_count", 0)),     step=1)
+        fl1, fl2, fl3 = st.columns(3)
+        edit_pipe      = fl1.checkbox("防護管",     value=bool(q.get("do_protection_pipe", False)))
+        edit_carport   = fl2.checkbox("カーポート脱着", value=bool(q.get("do_carport", False)))
+        edit_foundation= fl3.checkbox("基礎塗装",   value=bool(q.get("do_foundation", False)))
+
         if st.button("🔄 再計算する", type="primary", use_container_width=True):
-            q["wall_area"]         = edit_wall
-            q["roof_area"]         = edit_roof
-            q["fascia_length"]     = edit_fascia
-            q["soffit_length"]     = edit_soffit
-            q["gutter_length"]     = edit_gutter
-            q["joint_seal_length"] = edit_joint
-            q["scaffold_area"]     = round(edit_wall * 1.1, 1)
+            q["wall_area"]          = edit_wall
+            q["roof_area"]          = edit_roof
+            q["fascia_length"]      = edit_fascia
+            q["soffit_length"]      = edit_soffit
+            q["gutter_length"]      = edit_gutter
+            q["joint_seal_length"]  = edit_joint
+            q["scaffold_area"]      = round(edit_wall * 1.1, 1)
             if edit_wall > 0 and edit_roof > 0:
                 q["roof_scaffold_area"] = edit_roof
+            q["guardman_count"]     = edit_guardman
+            q["discount"]           = edit_discount
+            q["window_top_length"]  = edit_window_top
+            q["beam_length"]        = edit_beam
+            q["shutter_box_length"] = edit_shutter
+            q["skylight_count"]     = edit_skylight
+            q["do_protection_pipe"] = edit_pipe
+            q["do_carport"]         = edit_carport
+            q["do_foundation"]      = edit_foundation
             st.session_state.quantities = q
             st.session_state.estimation = calculate_from_quantities(
                 q,
