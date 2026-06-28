@@ -83,17 +83,27 @@ button[kind="secondary"]{
 </style>""",
 
     "サイバーパンク": """<style>
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap');
 
 [data-testid="stAppViewContainer"]{
   background:#00080f;
+  font-family:'Rajdhani',sans-serif !important;
   background-image:
     linear-gradient(rgba(0,255,255,0.04) 1px,transparent 1px),
     linear-gradient(90deg,rgba(0,255,255,0.04) 1px,transparent 1px);
   background-size:40px 40px;
 }
 [data-testid="stAppViewContainer"] p,
-[data-testid="stAppViewContainer"] .stMarkdown{color:#a0f0a0}
+[data-testid="stAppViewContainer"] .stMarkdown,
+[data-testid="stAppViewContainer"] label,
+[data-testid="stAppViewContainer"] .stSelectbox,
+[data-testid="stAppViewContainer"] .stRadio,
+[data-testid="stAppViewContainer"] span{
+  color:#7fffff;
+  font-family:'Rajdhani',sans-serif !important;
+  font-size:1.05rem;
+  letter-spacing:0.5px;
+}
 [data-testid="stSidebar"]{
   background:linear-gradient(180deg,#00050f 0%,#00080f 100%);
   border-right:1px solid #00ffff;
@@ -105,6 +115,8 @@ button[kind="secondary"]{
   background:#00050f !important;color:#00ffff !important;
   border:1px solid #00cccc !important;border-radius:2px !important;
   font-family:'Share Tech Mono',monospace !important;
+  font-size:1rem !important;
+  letter-spacing:1px !important;
   box-shadow:0 0 8px rgba(0,255,255,0.2) inset !important;
 }
 [data-testid="stNumberInput"] input{
@@ -188,6 +200,21 @@ button[kind="secondary"]{
 [data-testid="stAlert"]{
   background:rgba(0,255,255,0.04) !important;
   border:1px solid rgba(0,255,255,0.3) !important;border-radius:2px !important;
+}
+/* キャプション・ラベル */
+[data-testid="stCaptionContainer"],
+[data-testid="stMarkdownContainer"] small{
+  font-family:'Rajdhani',sans-serif !important;
+  color:#00cccc !important;letter-spacing:0.5px;
+}
+/* メトリクスラベル */
+[data-testid="stMetricLabel"]{
+  font-family:'Orbitron',monospace !important;
+  font-size:0.7rem !important;letter-spacing:2px;color:#00cccc !important;
+}
+/* テーブル本文 */
+[data-testid="stDataFrame"] td{
+  font-family:'Share Tech Mono',monospace !important;font-size:0.85rem !important;
 }
 </style>""",
 }
