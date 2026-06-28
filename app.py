@@ -32,17 +32,22 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────
 _THEMES = {
     "スタンダード": """<style>
-/* ボタンを落ち着いたスレートブルーに */
-[data-testid="baseButton-primary"]{
+/* プライマリボタン（見積もり作成・ログイン等）*/
+[data-testid="baseButton-primary"],
+button[kind="primary"],
+.stButton > button[kind="primary"],
+.stForm button[type="submit"] {
   background:#3d6b8f !important;color:#fff !important;
   border:none !important;border-radius:6px !important;font-weight:600 !important;
 }
-[data-testid="baseButton-primary"]:hover{background:#2f5470 !important}
-[data-testid="baseButton-secondary"]{
+[data-testid="baseButton-primary"]:hover,
+button[kind="primary"]:hover {background:#2f5470 !important}
+/* セカンダリボタン */
+[data-testid="baseButton-secondary"],
+button[kind="secondary"] {
   background:#fff !important;color:#3d6b8f !important;
   border:1.5px solid #3d6b8f !important;border-radius:6px !important;
 }
-[data-testid="baseButton-secondary"]:hover{background:#eef4f8 !important}
 </style>""",
 
     "ダーク": """<style>
@@ -58,11 +63,16 @@ _THEMES = {
 h1{color:#58a6ff !important;font-weight:700 !important}
 h2{color:#79c0ff !important;font-weight:600 !important}
 h3{color:#cae8ff !important}
-[data-testid="baseButton-primary"]{
+[data-testid="baseButton-primary"],
+button[kind="primary"],
+.stButton > button[kind="primary"],
+.stForm button[type="submit"]{
   background:#1f6feb !important;color:#fff !important;
   border:none !important;border-radius:6px !important;font-weight:600 !important}
-[data-testid="baseButton-primary"]:hover{background:#388bfd !important}
-[data-testid="baseButton-secondary"]{
+[data-testid="baseButton-primary"]:hover,
+button[kind="primary"]:hover{background:#388bfd !important}
+[data-testid="baseButton-secondary"],
+button[kind="secondary"]{
   background:#21262d !important;color:#c9d1d9 !important;
   border:1px solid #30363d !important;border-radius:6px !important}
 [data-testid="stMetric"]{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 16px}
@@ -119,7 +129,10 @@ h3{
   text-shadow:0 0 6px rgba(127,255,127,0.4) !important;
 }
 
-[data-testid="baseButton-primary"]{
+[data-testid="baseButton-primary"],
+button[kind="primary"],
+.stButton > button[kind="primary"],
+.stForm button[type="submit"]{
   background:linear-gradient(135deg,#006600,#00aa00) !important;
   color:#00ff41 !important;border:1px solid #00ff41 !important;
   border-radius:2px !important;font-weight:700 !important;
@@ -127,11 +140,13 @@ h3{
   box-shadow:0 0 12px rgba(0,255,65,0.4) !important;
   text-transform:uppercase;
 }
-[data-testid="baseButton-primary"]:hover{
+[data-testid="baseButton-primary"]:hover,
+button[kind="primary"]:hover{
   background:linear-gradient(135deg,#008800,#00cc00) !important;
   box-shadow:0 0 22px rgba(0,255,65,0.7) !important;
 }
-[data-testid="baseButton-secondary"]{
+[data-testid="baseButton-secondary"],
+button[kind="secondary"]{
   background:transparent !important;color:#00ff41 !important;
   border:1px solid #00cc33 !important;border-radius:2px !important;
   font-family:'Share Tech Mono',monospace !important;
@@ -214,6 +229,9 @@ for _k, _v in DEFAULTS.items():
 # ─────────────────────────────────────────────────────────────
 # ログイン
 # ─────────────────────────────────────────────────────────────
+# テーマをログイン画面にも適用
+_apply_theme(st.session_state.get("theme", "スタンダード"))
+
 if not st.session_state.logged_in:
     show_login_page()
     st.stop()
@@ -280,8 +298,6 @@ with st.sidebar:
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.rerun()
-
-_apply_theme(st.session_state.get("theme", "スタンダード"))
 
 st.title("🏠 AI塗装積算システム")
 
