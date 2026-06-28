@@ -446,6 +446,26 @@ if st.session_state.step == 1:
             "図面PDF（あれば面積を自動補完）", type=["pdf"],
             help="音声で言い忘れた面積を図面から補います",
         )
+        if pdf_file:
+            _scale_cols = st.columns(2)
+            drawing_scale = _scale_cols[0].selectbox(
+                "図面の縮尺",
+                ["不要", "1/100", "1/200", "1/50", "1/150", "1/250", "1/300"],
+                index=1,
+                help="図面に記載されている縮尺。1/100・1/200が一般的",
+            )
+            if drawing_scale != "不要":
+                original_paper = _scale_cols[1].selectbox(
+                    "元の用紙サイズ（補正）",
+                    ["補正なし", "A1", "A2", "A3", "A4"],
+                    index=0,
+                    help="縮尺を合わせてコピー済みなら「補正なし」。A2図面をA4スキャンした場合はA2を選択",
+                )
+            else:
+                original_paper = None
+        else:
+            drawing_scale = "不要"
+            original_paper = None
         photo_files = st.file_uploader(
             "現場写真（あれば劣化状況を解析・複数可）",
             type=["jpg", "jpeg", "png", "webp"],
@@ -516,8 +536,12 @@ if st.session_state.step == 1:
             }
             if pdf_file:
                 st.session_state["pdf_bytes"] = pdf_file.getvalue()
+                st.session_state["drawing_scale"]  = drawing_scale
+                st.session_state["original_paper"] = original_paper
             elif "pdf_bytes" in st.session_state:
                 del st.session_state["pdf_bytes"]
+                st.session_state.pop("drawing_scale", None)
+                st.session_state.pop("original_paper", None)
             if photo_files:
                 st.session_state["photo_bytes_list"] = [f.getvalue() for f in photo_files]
             elif "photo_bytes_list" in st.session_state:

@@ -108,16 +108,18 @@ class DrawingAnalyzer:
         original_paper: "A2" など
         page0_size_mm: (width_mm, height_mm)
         """
-        if not stated_scale or stated_scale == "不要":
-            return None
+        # 「補正なし」= 縮尺を合わせてコピー済み → そのまま使う
+        if not original_paper or original_paper in ("補正なし", None):
+            return stated_scale
+
         if original_paper not in PAPER_LONG_SIDE_MM:
-            return None
+            return stated_scale
 
         # 縮尺分母を取得
         try:
             denom = int(stated_scale.split("/")[1])
         except Exception:
-            return None
+            return stated_scale
 
         # 現在のPDFページの長辺（mm）
         w, h = page0_size_mm
