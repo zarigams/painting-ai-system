@@ -614,7 +614,11 @@ elif st.session_state.step == 2:
                     if has_pdf:
                         from core.drawing_analyzer import DrawingAnalyzer
                         da = DrawingAnalyzer(llm.api_key)
-                        drawing_data = da.analyze(st.session_state.pdf_bytes)
+                        drawing_data = da.analyze(
+                            st.session_state.pdf_bytes,
+                            stated_scale=st.session_state.get("drawing_scale", "不要"),
+                            original_paper=st.session_state.get("original_paper"),
+                        )
                         st.session_state.drawing_data = drawing_data
                         quantities = _merge_drawing(quantities, drawing_data)
 
