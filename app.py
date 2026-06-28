@@ -26,6 +26,67 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+
+# ─────────────────────────────────────────────────────────────
+# テーマ定義
+# ─────────────────────────────────────────────────────────────
+_THEMES = {
+    "プロ向け（シンプル）": """<style>
+[data-testid="stAppViewContainer"]{background:#f8f9fa}
+[data-testid="stSidebar"]{background:#ffffff;border-right:1px solid #e0e0e0}
+[data-testid="stSidebar"] *{color:#333 !important}
+h1,h2,h3{color:#1a1a2e !important;font-weight:700 !important}
+[data-testid="baseButton-primary"]{background:#1a1a2e !important;color:#fff !important;border-radius:6px !important;border:none !important;font-weight:600 !important}
+[data-testid="baseButton-primary"]:hover{background:#2d2d4e !important}
+[data-testid="baseButton-secondary"]{background:#fff !important;color:#1a1a2e !important;border:1.5px solid #1a1a2e !important;border-radius:6px !important}
+[data-testid="stMetric"]{background:#fff;border:1px solid #e8e8e8;border-radius:8px;padding:12px 16px}
+[data-testid="stMetricValue"]{color:#1a1a2e !important;font-size:1.6rem !important}
+[data-testid="stDataFrame"] th{background:#1a1a2e !important;color:#fff !important}
+[data-testid="stExpander"]{border:1px solid #e0e0e0 !important;border-radius:8px !important}
+</style>""",
+
+    "和風・職人": """<style>
+[data-testid="stAppViewContainer"]{background:linear-gradient(135deg,#fdf6e3 0%,#f5efe0 100%)}
+[data-testid="stSidebar"]{background:linear-gradient(180deg,#2c3e2d 0%,#1a2e1b 100%);border-right:3px solid #8b7355}
+[data-testid="stSidebar"] *{color:#e8d5a3 !important}
+h1{color:#3d2b1f !important;font-weight:700 !important;border-bottom:2px solid #8b7355;padding-bottom:8px}
+h2,h3{color:#3d2b1f !important;font-weight:600 !important}
+[data-testid="baseButton-primary"]{background:linear-gradient(135deg,#8b6914,#6b4f10) !important;color:#fff !important;border-radius:4px !important;border:1px solid #6b4f10 !important;font-weight:600 !important;letter-spacing:1px}
+[data-testid="baseButton-primary"]:hover{background:linear-gradient(135deg,#a07820,#8b6914) !important}
+[data-testid="baseButton-secondary"]{background:#fdf6e3 !important;color:#3d2b1f !important;border:1.5px solid #8b7355 !important;border-radius:4px !important}
+[data-testid="stSidebar"] [data-testid="baseButton-secondary"]{background:rgba(139,115,85,0.2) !important;color:#e8d5a3 !important;border:1px solid #8b7355 !important}
+[data-testid="stMetric"]{background:rgba(255,255,255,0.7);border:1px solid #c4a882;border-radius:4px;padding:12px 16px}
+[data-testid="stMetricValue"]{color:#6b4f10 !important;font-size:1.6rem !important}
+[data-testid="stDataFrame"] th{background:#3d2b1f !important;color:#e8d5a3 !important}
+[data-testid="stExpander"]{border:1px solid #c4a882 !important;border-radius:4px !important;background:rgba(255,255,255,0.5) !important}
+</style>""",
+
+    "モダン（ダーク）": """<style>
+[data-testid="stAppViewContainer"]{background:#0d1117}
+[data-testid="stAppViewContainer"] *{color:#e6edf3}
+[data-testid="stSidebar"]{background:#161b22;border-right:1px solid #30363d}
+[data-testid="stSidebar"] *{color:#c9d1d9 !important}
+[data-testid="stTextInput"] input,[data-testid="stTextArea"] textarea{background:#21262d !important;color:#e6edf3 !important;border:1px solid #30363d !important;border-radius:6px !important}
+[data-testid="stNumberInput"] input{background:#21262d !important;color:#e6edf3 !important;border:1px solid #30363d !important}
+h1{color:#58a6ff !important;font-weight:700 !important}
+h2{color:#79c0ff !important;font-weight:600 !important}
+h3{color:#cae8ff !important}
+[data-testid="baseButton-primary"]{background:linear-gradient(135deg,#238636,#2ea043) !important;color:#fff !important;border:none !important;border-radius:6px !important;font-weight:600 !important}
+[data-testid="baseButton-primary"]:hover{background:linear-gradient(135deg,#2ea043,#3fb950) !important}
+[data-testid="baseButton-secondary"]{background:#21262d !important;color:#c9d1d9 !important;border:1px solid #30363d !important;border-radius:6px !important}
+[data-testid="stMetric"]{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 16px}
+[data-testid="stMetricValue"]{color:#58a6ff !important;font-size:1.6rem !important}
+[data-testid="stDataFrame"] th{background:#21262d !important;color:#58a6ff !important}
+[data-testid="stDataFrame"] td{background:#0d1117 !important;color:#e6edf3 !important}
+[data-testid="stExpander"]{background:#161b22 !important;border:1px solid #30363d !important;border-radius:8px !important}
+</style>""",
+}
+
+def _apply_theme(theme_name: str):
+    css = _THEMES.get(theme_name, "")
+    if css:
+        st.markdown(css, unsafe_allow_html=True)
+
 # ─────────────────────────────────────────────────────────────
 # セッション状態の初期化
 # ─────────────────────────────────────────────────────────────
