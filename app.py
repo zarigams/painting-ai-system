@@ -40,6 +40,9 @@ DEFAULTS = {
     "quantities":        {},
     "estimation":        {},
     "voice_memo":        "",
+    "voice_extras":      {},
+    "voice_raw":         {},
+    "auto_done":         False,
 }
 for _k, _v in DEFAULTS.items():
     if _k not in st.session_state:
@@ -58,7 +61,7 @@ if not st.session_state.logged_in:
 with st.sidebar:
     st.markdown(f"### 🏢 {st.session_state.company_name or ''}様")
     st.markdown("---")
-    step_labels = ["① 案件情報入力", "② AI解析", "③ 数量確認", "④ 見積書出力"]
+    step_labels = ["① 現場メモ入力", "② AI自動積算", "③ 詳細確認（任意）", "④ 見積書出力"]
     cur = st.session_state.step
     for i, label in enumerate(step_labels, 1):
         if i < cur:
@@ -71,6 +74,7 @@ with st.sidebar:
     if st.button("🔄 最初からやり直す", use_container_width=True):
         for k in ["step", "project", "drawing_data", "image_data",
                   "quantities", "estimation", "voice_memo",
+                  "voice_extras", "voice_raw", "auto_done",
                   "pdf_bytes", "photo_bytes_list"]:
             if k in st.session_state:
                 del st.session_state[k]
@@ -88,80 +92,78 @@ st.title("🏠 AI塗装積算システム")
 # STEP 1: 案件情報入力
 # ═════════════════════════════════════════════════════════════
 if st.session_state.step == 1:
-    st.header("① 案件情報入力")
-    st.caption("お客様情報・建物情報・資料をご入力ください")
+    st.header("① 現場メモ入力")
+    st.caption("🎤 音声メモ1本で見積もりの8割が完成します。必須はお客様名・現場住所だけ。")
 
-    col1, col2 = st.columns(2)
+    # ── 音声メモ（メイン入力）─────────────────────────────────
+    st.subheader("🎤 現場音声メモ（メイン入力）")
+    st.markdown(
+        "現場を歩きながら、**面積・長さ・施工範囲**を吹き込んでください。\n\n"
+        "> 例：「住吉屋さんの現場、外壁サイディング237平米、屋根スレート190平米、"
+        "破風74メートル、雨樋92メートル、土台水切49メートル、目地シーリング202メートル、"
+        "2階建て、道路使用許可必要」"
+    )
 
-    with col1:
-        st.subheader("👤 お客様・案件情報")
-        client_name   = st.text_input("お客様名 ＊", placeholder="例：住吉屋 栄子 様")
-        site_address  = st.text_input("現場住所 ＊", placeholder="例：東京都世田谷区…")
-        sales_rep     = st.text_input("担当者名",    placeholder="例：山田 太郎")
-        project_name  = st.text_input("工事件名",    placeholder="例：外壁・屋根塗装工事")
-
-        st.subheader("🏗️ 建物基本情報")
-        building_type   = st.selectbox("建物種別",
-                            ["戸建て", "共同住宅", "マンション", "店舗・工場"])
-        building_floors = st.number_input("階数", min_value=1, max_value=10, value=2, step=1)
-        building_area   = st.number_input("建築面積（㎡）", min_value=0.0,
-                            value=0.0, step=1.0,
-                            help="わかる場合のみ入力。AI解析時に参照します。")
-
-    with col2:
-        st.subheader("📄 図面・写真のアップロード")
-        pdf_file = st.file_uploader(
-            "図面PDF（任意）", type=["pdf"],
-            help="平面図・立面図等をアップロードするとAIが面積を自動計算します",
-        )
-        photo_files = st.file_uploader(
-            "現場写真（任意・複数可）",
-            type=["jpg", "jpeg", "png", "webp"],
-            accept_multiple_files=True,
-            help="外壁・屋根・付帯部の写真をアップロードすると劣化状況も解析します",
-        )
-
-        st.subheader("🎤 音声メモ（任意）")
-        audio_input = st.audio_input("現地調査メモを音声で入力")
-        if audio_input is not None:
-            if st.button("文字起こし実行"):
-                with st.spinner("音声を文字起こし中…"):
-                    try:
-                        from modules.llm_client import LLMClient
-                        llm = LLMClient()
-                        text = llm.transcribe_audio(audio_input.getvalue(), "memo.webm")
-                        st.session_state.voice_memo = text
-                        st.success("文字起こし完了！")
-                    except Exception as e:
-                        st.error(f"文字起こし失敗: {e}")
-
+    ac1, ac2 = st.columns([1, 1])
+    with ac1:
+        audio_input = st.audio_input("ここで録音 →")
+        if audio_input is not None and st.button(
+            "🎧 文字起こし実行", use_container_width=True):
+            with st.spinner("Whisperで文字起こし中…"):
+                try:
+                    from modules.llm_client import LLMClient
+                    llm = LLMClient()
+                    text = llm.transcribe_audio(audio_input.getvalue(), "memo.webm")
+                    prev = st.session_state.voice_memo
+                    st.session_state.voice_memo = (prev + "\n" + text).strip() if prev else text
+                    st.success("文字起こし完了！右の欄に反映しました。")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"文字起こし失敗: {e}")
+    with ac2:
         voice_memo = st.text_area(
-            "現地メモ（音声文字起こし or 手入力）",
+            "音声メモ（文字起こし結果・手入力も可）",
             value=st.session_state.voice_memo,
-            height=120,
-            placeholder="外壁の劣化状況、施工範囲、特記事項など自由に入力",
+            height=180,
+            placeholder="外壁237平米、屋根190平米、破風74メートル、雨樋92メートル…",
         )
 
     st.markdown("---")
-    st.subheader("🔧 施工範囲（該当するものにチェック）")
-    sc1, sc2, sc3 = st.columns(3)
-    with sc1:
-        do_roof        = st.checkbox("屋根塗装",       value=True)
-        do_wall        = st.checkbox("外壁塗装",       value=True)
-        do_fascia      = st.checkbox("破風・鼻隠し",   value=True)
-        do_soffit      = st.checkbox("軒天",           value=True)
-    with sc2:
-        do_gutter      = st.checkbox("雨樋",           value=True)
-        do_sealing     = st.checkbox("シーリング",     value=True)
-        do_foundation  = st.checkbox("基礎塗装",       value=False)
-        do_shutter_box = st.checkbox("シャッターボックス", value=False)
-    with sc3:
-        do_protection  = st.checkbox("防護管",         value=False)
-        do_guardman    = st.checkbox("ガードマン",     value=False)
-        do_water_cutoff = st.checkbox("土台水切",      value=True)
-        do_window_top  = st.checkbox("出窓天端",       value=False)
 
-    if st.button("次へ → AI解析開始", type="primary", use_container_width=True):
+    # ── お客様情報（必須）＋ 補足資料（任意）─────────────────
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("👤 お客様情報（必須）")
+        _p = st.session_state.project
+        client_name  = st.text_input("お客様名 ＊",
+            value=_p.get("client_name", ""), placeholder="例：住吉屋 栄子 様")
+        site_address = st.text_input("現場住所 ＊",
+            value=_p.get("site_address", ""), placeholder="例：東京都世田谷区…")
+        sales_rep    = st.text_input("担当者名",
+            value=_p.get("sales_rep", ""), placeholder="例：山田 太郎")
+    with col2:
+        st.subheader("📄 補足資料（任意）")
+        pdf_file = st.file_uploader(
+            "図面PDF（あれば面積を自動補完）", type=["pdf"],
+            help="音声で言い忘れた面積を図面から補います",
+        )
+        photo_files = st.file_uploader(
+            "現場写真（あれば劣化状況を解析・複数可）",
+            type=["jpg", "jpeg", "png", "webp"],
+            accept_multiple_files=True,
+        )
+
+    with st.expander("🏗️ 建物情報を補足する（任意）"):
+        bc1, bc2, bc3 = st.columns(3)
+        building_type   = bc1.selectbox("建物種別",
+                            ["戸建て", "共同住宅", "マンション", "店舗・工場"])
+        building_floors = bc2.number_input("階数",
+                            min_value=1, max_value=10, value=2, step=1)
+        building_area   = bc3.number_input("建築面積（㎡）",
+                            min_value=0.0, value=0.0, step=1.0)
+
+    st.markdown("---")
+    if st.button("🚀 見積もりを作成する", type="primary", use_container_width=True):
         if not client_name:
             st.error("お客様名を入力してください")
         elif not site_address:
@@ -171,25 +173,11 @@ if st.session_state.step == 1:
                 "client_name":     client_name,
                 "site_address":    site_address,
                 "sales_rep":       sales_rep,
-                "project_name":    project_name or f"{client_name}邸 塗装工事",
+                "project_name":    f"{client_name}邸 塗装工事",
                 "building_type":   building_type,
                 "building_floors": building_floors,
                 "building_area":   building_area,
                 "voice_memo":      voice_memo,
-                "scope": {
-                    "roof":         do_roof,
-                    "wall":         do_wall,
-                    "fascia":       do_fascia,
-                    "soffit":       do_soffit,
-                    "gutter":       do_gutter,
-                    "sealing":      do_sealing,
-                    "foundation":   do_foundation,
-                    "shutter_box":  do_shutter_box,
-                    "protection":   do_protection,
-                    "guardman":     do_guardman,
-                    "water_cutoff": do_water_cutoff,
-                    "window_top":   do_window_top,
-                },
             }
             if pdf_file:
                 st.session_state["pdf_bytes"] = pdf_file.getvalue()
@@ -200,6 +188,7 @@ if st.session_state.step == 1:
             elif "photo_bytes_list" in st.session_state:
                 del st.session_state["photo_bytes_list"]
             st.session_state.voice_memo = voice_memo
+            st.session_state.auto_done  = False
             st.session_state.step = 2
             st.rerun()
 
@@ -208,129 +197,159 @@ if st.session_state.step == 1:
 # STEP 2: AI解析
 # ═════════════════════════════════════════════════════════════
 elif st.session_state.step == 2:
-    st.header("② AI解析")
+    st.header("② AI自動積算")
     proj       = st.session_state.project
+    voice_text = (proj.get("voice_memo") or "").strip()
+    has_voice  = bool(voice_text)
     has_pdf    = "pdf_bytes" in st.session_state
     has_photos = bool(st.session_state.get("photo_bytes_list"))
 
-    def _build_quantities_from_analysis(drawing_data, image_data, proj):
-        scope = proj.get("scope", {})
-        q = {
-            "do_roof":            scope.get("roof",      True),
-            "do_wall":            scope.get("wall",      True),
-            "do_foundation":      scope.get("foundation", False),
-            "do_lifting":         True,
-            "do_transport":       True,
-            "do_road_permit":     True,
-            "do_misc_seal":       scope.get("sealing",   True),
-            "do_protection_pipe": scope.get("protection", False),
-            "guardman_count":     1 if scope.get("guardman") else 0,
-        }
-        if drawing_data:
-            wall = drawing_data.get("exterior_wall_area")
-            roof = drawing_data.get("roof_area")
-            if wall:
-                q["wall_area"]          = float(wall)
-                q["scaffold_area"]      = round(float(wall) * 1.1, 1)
-                q["joint_seal_length"]  = round(float(wall) * 0.8, 1)
-            if roof:
-                q["roof_area"]          = float(roof)
+    def _merge_drawing(q, drawing_data):
+        """図面で得た面積を、音声で未入力(0)の項目だけ補完する。"""
+        wall = drawing_data.get("exterior_wall_area")
+        roof = drawing_data.get("roof_area")
+        if wall and not q.get("wall_area"):
+            q["wall_area"]     = float(wall)
+            q["scaffold_area"] = round(float(wall) * 1.1, 1)
+            if not q.get("joint_seal_length"):
+                q["joint_seal_length"] = round(float(wall) * 0.85, 1)
+        if roof and not q.get("roof_area"):
+            q["roof_area"] = float(roof)
+            if q.get("do_roof", True):
                 q["roof_scaffold_area"] = float(roof)
-        if image_data and "quantities" in image_data:
-            iq = image_data["quantities"]
-            for src, dst in [
-                ("exterior_wall_area", "wall_area"),
-                ("roof_area",          "roof_area"),
-                ("fascia_length",      "fascia_length"),
-                ("gutter_length",      "gutter_length"),
-                ("sealing_length",     "joint_seal_length"),
-                ("scaffold_area",      "scaffold_area"),
-            ]:
-                v = iq.get(src, {})
-                val = v.get("value") if isinstance(v, dict) else None
-                if val and dst not in q:
-                    q[dst] = float(val)
         return q
 
-    if not has_pdf and not has_photos:
-        st.info("📋 図面・写真のアップロードなし → 数量入力フォームに直接進みます")
-        if st.button("数量入力フォームへ →", type="primary"):
-            scope = proj.get("scope", {})
-            st.session_state.quantities = _build_quantities_from_analysis({}, {}, proj)
+    def _merge_photo(q, image_data):
+        """写真解析で得た数量を、未入力(0)の項目だけ補完する。"""
+        if not image_data or "quantities" not in image_data:
+            return q
+        iq = image_data["quantities"]
+        for src, dst in [
+            ("exterior_wall_area", "wall_area"),
+            ("roof_area",          "roof_area"),
+            ("fascia_length",      "fascia_length"),
+            ("gutter_length",      "gutter_length"),
+            ("sealing_length",     "joint_seal_length"),
+        ]:
+            v = iq.get(src, {})
+            val = v.get("value") if isinstance(v, dict) else None
+            if val and not q.get(dst):
+                q[dst] = float(val)
+        return q
+
+    # ── データが何も無い → 手動フォームへ ───────────────────
+    if not has_voice and not has_pdf and not has_photos:
+        st.info("音声メモ・図面・写真がありません。手動で数量を入力してください。")
+        if st.button("✏️ 数量入力フォームへ →", type="primary"):
+            from core.voice_extractor import build_quantities
+            st.session_state.quantities = build_quantities({})
             st.session_state.step = 3
             st.rerun()
-    else:
-        analyze_done = bool(st.session_state.get("drawing_data") or st.session_state.get("image_data"))
+        if st.button("← 入力に戻る"):
+            st.session_state.step = 1
+            st.rerun()
+        st.stop()
 
-        if not analyze_done:
-            if st.button("▶️ AI解析を開始する", type="primary", use_container_width=True):
-                with st.spinner("AIが資料を解析中…（30秒〜1分程度）"):
-                    drawing_data = {}
-                    image_data   = {}
-                    try:
-                        from modules.llm_client import LLMClient
-                        llm = LLMClient()
+    # ── 自動積算 未実行 → 実行ボタン ─────────────────────────
+    if not st.session_state.get("auto_done"):
+        srcs = []
+        if has_voice:  srcs.append("🎤 音声メモ")
+        if has_pdf:    srcs.append("📐 図面PDF")
+        if has_photos: srcs.append("📸 現場写真")
+        st.caption("入力ソース： " + " ＋ ".join(srcs))
 
-                        if has_pdf:
-                            st.info("📐 図面PDFを解析中…")
-                            from core.drawing_analyzer import DrawingAnalyzer
-                            da = DrawingAnalyzer(llm)
-                            drawing_data = da.analyze(st.session_state.pdf_bytes)
-                            st.success(f"図面解析完了: {drawing_data.get('building_type','')} {drawing_data.get('floors','')}階")
+        if st.button("▶️ 自動積算を実行する", type="primary", use_container_width=True):
+            with st.spinner("AIが音声・資料から数量を抽出中…（30秒〜1分程度）"):
+                try:
+                    from modules.llm_client import LLMClient
+                    from core.voice_extractor import extract_quantities, build_quantities
+                    llm = LLMClient()
 
-                        if has_photos:
-                            st.info("📸 現場写真を解析中…")
-                            from modules.image_analyzer import ImageAnalyzer
-                            ia = ImageAnalyzer(llm)
-                            desc = proj.get("voice_memo", "") + f"\n建物種別: {proj.get('building_type','')}"
-                            image_data = ia.analyze(st.session_state.photo_bytes_list, desc)
-                            st.success("写真解析完了")
+                    extras, raw = {}, {}
+                    if has_voice:
+                        result    = extract_quantities(voice_text, llm)
+                        quantities = result["quantities"]
+                        extras     = result["extras"]
+                        raw        = result["raw"]
+                    else:
+                        # 音声なし（図面/写真のみ）→ 経験則のベース dict から開始
+                        quantities = build_quantities({})
 
+                    if has_pdf:
+                        from core.drawing_analyzer import DrawingAnalyzer
+                        da = DrawingAnalyzer(llm)
+                        drawing_data = da.analyze(st.session_state.pdf_bytes)
                         st.session_state.drawing_data = drawing_data
-                        st.session_state.image_data   = image_data
-                        st.session_state.quantities   = _build_quantities_from_analysis(
-                            drawing_data, image_data, proj)
-                        st.rerun()
+                        quantities = _merge_drawing(quantities, drawing_data)
 
-                    except Exception as e:
-                        st.error(f"AI解析エラー: {e}")
-                        st.info("スキップして手動入力できます")
-                        if st.button("手動入力で続行 →"):
-                            st.session_state.quantities = _build_quantities_from_analysis({}, {}, proj)
-                            st.session_state.step = 3
-                            st.rerun()
-        else:
-            drawing_data = st.session_state.drawing_data
-            image_data   = st.session_state.image_data
-            st.success("✅ AI解析完了！")
+                    if has_photos:
+                        from modules.image_analyzer import ImageAnalyzer
+                        ia = ImageAnalyzer(llm)
+                        desc = voice_text + f"\n建物種別: {proj.get('building_type','')}"
+                        image_data = ia.analyze(st.session_state.photo_bytes_list, desc)
+                        st.session_state.image_data = image_data
+                        quantities = _merge_photo(quantities, image_data)
 
-            if drawing_data:
-                st.subheader("📐 図面解析結果")
-                dc1, dc2, dc3 = st.columns(3)
-                dc1.metric("建物種別",     drawing_data.get("building_type", "不明"))
-                dc2.metric("外壁面積（推定）", f"{drawing_data.get('exterior_wall_area', '?')} ㎡")
-                dc3.metric("屋根面積（推定）", f"{drawing_data.get('roof_area', '?')} ㎡")
-                if drawing_data.get("notes"):
-                    st.caption(drawing_data["notes"])
+                    st.session_state.quantities   = quantities
+                    st.session_state.voice_extras = extras
+                    st.session_state.voice_raw    = raw
+                    st.session_state.estimation   = calculate_from_quantities(
+                        quantities,
+                        client_name=proj.get("client_name", ""),
+                        site_address=proj.get("site_address", ""),
+                        sales_rep=proj.get("sales_rep", ""),
+                    )
+                    st.session_state.auto_done = True
+                    st.rerun()
 
-            if image_data and not image_data.get("parse_error"):
-                st.subheader("📸 写真解析結果")
-                cond = image_data.get("conditions", {})
-                if cond:
-                    st.caption(f"劣化状況: {cond.get('deterioration_level','不明')} / {cond.get('notes','')}")
-                missing = image_data.get("missing_info", [])
-                if missing:
-                    with st.expander("⚠️ 要確認事項"):
-                        for m in missing:
-                            st.write(f"• {m}")
+                except Exception as e:
+                    st.error(f"自動積算エラー: {e}")
+                    st.info("APIキー未設定などの場合は、下のボタンで手動入力に切り替えできます。")
 
-            if st.button("数量確認フォームへ →", type="primary", use_container_width=True):
+        if st.button("✏️ 手動入力で進める（AIを使わない）"):
+            from core.voice_extractor import build_quantities
+            st.session_state.quantities = build_quantities({})
+            st.session_state.step = 3
+            st.rerun()
+        if st.button("← 入力に戻る"):
+            st.session_state.step = 1
+            st.rerun()
+
+    # ── 自動積算 完了 → サマリー表示 ─────────────────────────
+    else:
+        q      = st.session_state.quantities
+        extras = st.session_state.get("voice_extras", {})
+        est    = st.session_state.estimation
+        st.success("✅ 自動積算が完了しました！内容をご確認ください。")
+
+        cc1, cc2, cc3 = st.columns(3)
+        cc1.metric("外壁面積",      f"{q.get('wall_area', 0)} ㎡")
+        cc2.metric("屋根面積",      f"{q.get('roof_area', 0)} ㎡")
+        cc3.metric("合計（税込）",  f"¥{est.get('total', 0):,}")
+        sc1, sc2, sc3 = st.columns(3)
+        sc1.metric("外部足場",       f"{q.get('scaffold_area', 0)} ㎡")
+        sc2.metric("破風 / 軒天",    f"{q.get('fascia_length', 0)} / {q.get('soffit_length', 0)} m")
+        sc3.metric("目地シーリング", f"{q.get('joint_seal_length', 0)} m")
+
+        if extras.get("notes"):
+            st.info(f"📝 音声メモ補足: {extras['notes']}")
+        st.caption(
+            "※ 足場・軒天・シーリング等の未入力項目は塗装業の経験則で自動補完しています。"
+            "金額の内訳は次の見積書画面でご確認いただけます。"
+        )
+
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("📝 詳細を確認・修正する", use_container_width=True):
                 st.session_state.step = 3
                 st.rerun()
-
-    if st.button("← 案件情報に戻る"):
-        st.session_state.step = 1
-        st.rerun()
+        with b2:
+            if st.button("✅ この内容で見積書へ →", type="primary", use_container_width=True):
+                st.session_state.step = 4
+                st.rerun()
+        if st.button("← 入力に戻る"):
+            st.session_state.step = 1
+            st.rerun()
 
 
 # ═════════════════════════════════════════════════════════════
@@ -495,7 +514,7 @@ elif st.session_state.step == 3:
             st.session_state.step = 4
             st.rerun()
 
-    if st.button("← AI解析に戻る"):
+    if st.button("← 自動積算に戻る"):
         st.session_state.step = 2
         st.rerun()
 
@@ -590,14 +609,15 @@ elif st.session_state.step == 4:
     st.markdown("---")
     b1, b2 = st.columns(2)
     with b1:
-        if st.button("← 数量修正に戻る", use_container_width=True):
+        if st.button("← 数量を確認・修正する", use_container_width=True):
             st.session_state.step = 3
             st.rerun()
     with b2:
         if st.button("🆕 新しい案件を作成", type="primary", use_container_width=True):
             for k in ["step", "project", "drawing_data", "image_data",
                       "quantities", "estimation", "pdf_bytes",
-                      "photo_bytes_list", "voice_memo"]:
+                      "photo_bytes_list", "voice_memo",
+                      "voice_extras", "voice_raw", "auto_done"]:
                 if k in st.session_state:
                     del st.session_state[k]
             st.session_state.step = 1
