@@ -5,10 +5,6 @@
   1. 音声文字起こしテキストから数値・単位・項目をGPT-4oで抽出（_extract_raw）
   2. 抽出できなかった項目を「塗装業の経験則」で自動補完（build_quantities）
   3. STEP3フォームと同じ形式の quantities dict を返す
-
-設計方針：
-  - GPT抽出（API必要）と 経験則補完（純Python・APIなしでテスト可能）を分離。
-  - build_quantities() はネットワーク不要なので、サンプル値で合計金額を検証できる。
 """
 
 import json
@@ -19,12 +15,25 @@ from typing import Optional
 _EXTRACT_SYSTEM_PROMPT = """あなたは外壁・屋根塗装の積算アシスタントです。
 営業担当の音声メモ（文字起こし）から、塗装工事の数量を正確に抽出してください。
 
+【重要：日本語の用語とJSONフィールドの対応】
+- wall_area       : 外壁面積（「外壁〇〇平米」「外壁〇〇㎡」）
+- roof_area       : 屋根面積（「屋根〇〇平米」「屋根〇〇㎡」）
+- fascia_length   : 破風・鼻隠し（「破風〇〇メートル」「鼻隠し〇〇m」）
+- gutter_length   : 雨樋（「雨樋〇〇メートル」「といm」）
+- water_cutoff_length : 土台水切（「土台水切〇〇メートル」「水切り〇〇m」）
+- joint_seal_length   : 目地シーリング・コーキング（「シーリング〇〇メートル」「コーキング〇〇m」）
+- soffit_length   : 軒天（「軒天〇〇メートル」「軒〇〇m」）
+- guardman_count  : ガードマン・交通誘導員（「ガードマン〇人」）
+- do_roof         : 屋根塗装あり（デフォルトtrue）
+- do_foundation   : 基礎塗装あり（言及があればtrue）
+- floors          : 階数（「〇階建て」）
+- discount        : 値引き金額（「値引き〇万円」）
+
 ルール：
 - 数値が明示されていない項目は必ず null を返す（推測で埋めない）。
 - 「平米」「㎡」「平方メートル」は面積、「メートル」「m」は長さ。
 - 屋根種別は スレート / 金属 / 瓦 / 不明 のいずれか。
 - 外壁種別は サイディング / モルタル / ALC / 不明 のいずれか。
-- 「道路使用許可が必要」等の発言があれば notes に残す。
 - 必ず指定のJSON形式のみで返す（説明文は不要）。"""
 
 _EXTRACT_SCHEMA_HINT = """以下のJSON形式で返してください：
@@ -47,10 +56,10 @@ _EXTRACT_SCHEMA_HINT = """以下のJSON形式で返してください：
   "discount": 数値またはnull,
   "client_name": "文字列またはnull",
   "site_address": "文字列またはnull",
-  "notes": "その他気になった情報"
+  "notes": "その他気になった情報（数量は上記フィールドに入れること）"
 }"""
 
-# 抽出結果の既定値（GPTが項目を落としても落ちないように）
+# 抽出結果の既定値
 _RAW_DEFAULTS = {
     "wall_area": None, "roof_area": None, "fascia_length": None,
     "gutter_length": None, "water_cutoff_length": None,
@@ -61,7 +70,6 @@ _RAW_DEFAULTS = {
     "client_name": None, "site_address": None, "notes": "",
 }
 
-# 屋根種別（抽出値→塗料・足場メモ用の表示名）
 _ROOF_TYPE_MAP = {
     "スレート": "スレート",
     "金属": "金属屋根（ガルバリウム）",
@@ -71,7 +79,6 @@ _ROOF_TYPE_MAP = {
 
 
 def _to_float(v) -> Optional[float]:
-    """数値文字列・数値をfloatへ。None/空/変換不可はNone。"""
     if v is None or v == "":
         return None
     try:
@@ -81,10 +88,6 @@ def _to_float(v) -> Optional[float]:
 
 
 def _extract_raw(voice_text: str, llm) -> dict:
-    """
-    GPT-4oで音声メモから数量を抽出して生dictを返す（経験則補完前）。
-    llm: modules.llm_client.LLMClient インスタンス
-    """
     user_message = f"{_EXTRACT_SCHEMA_HINT}\n\nテキスト：「{voice_text}」"
     resp = llm.client.chat.completions.create(
         model=llm.model,
@@ -93,31 +96,18 @@ def _extract_raw(voice_text: str, llm) -> dict:
             {"role": "user", "content": user_message},
         ],
         max_tokens=1500,
-        temperature=0.0,  # 抽出は再現性重視
+        temperature=0.0,
         response_format={"type": "json_object"},
     )
     text = resp.choices[0].message.content
     raw = json.loads(text)
-    # 既定値で穴埋め（GPTが落とした項目対策）
     merged = dict(_RAW_DEFAULTS)
     merged.update({k: v for k, v in raw.items() if k in _RAW_DEFAULTS})
     return merged
 
 
 def build_quantities(raw: dict) -> dict:
-    """
-    抽出生dict → 経験則で補完した quantities dict（STEP3フォーム形式）。
-    ※ ネットワーク不要。サンプル値での金額検証はこの関数で行える。
-
-    経験則（ルールベース補完）：
-      scaffold_area      = wall_area * 1.1      # 足場 = 外壁×1.1
-      roof_scaffold_area = roof_area            # 屋根足場 = 屋根面積
-      soffit_length      = fascia_length        # 軒天m = 破風m（未入力時）
-      joint_seal_length  = wall_area * 0.85     # シーリング = 外壁×0.85（未入力時）
-      do_lifting/transport/road_permit/misc_seal = True（常にあり）
-      misc_cost          = 200000               # 諸経費デフォルト
-    """
-    r = {k: raw.get(k) for k in _RAW_DEFAULTS}  # 安全に取り出し
+    r = {k: raw.get(k) for k in _RAW_DEFAULTS}
 
     wall_area = _to_float(r.get("wall_area")) or 0.0
     roof_area = _to_float(r.get("roof_area")) or 0.0
@@ -127,16 +117,11 @@ def build_quantities(raw: dict) -> dict:
 
     do_roof = bool(r.get("do_roof", True))
 
-    # ── 経験則補完 ──────────────────────────────────────────
-    # 足場 = 外壁 × 1.1
     scaffold_area = round(wall_area * 1.1, 1) if wall_area else 0.0
-    # 屋根足場 = 屋根面積
     roof_scaffold_area = roof_area if (do_roof and roof_area) else 0.0
-    # 軒天 = 破風（音声で軒天が出なければ破風と同じ）
     soffit_length = _to_float(r.get("soffit_length"))
     if not soffit_length:
         soffit_length = fascia_length
-    # シーリング = 外壁 × 0.85（音声で出なければ）
     joint_seal_length = _to_float(r.get("joint_seal_length"))
     if not joint_seal_length:
         joint_seal_length = round(wall_area * 0.85, 1) if wall_area else 0.0
@@ -151,7 +136,6 @@ def build_quantities(raw: dict) -> dict:
     roof_type = _ROOF_TYPE_MAP.get(roof_type_raw, "スレート")
 
     quantities = {
-        # 仮設工事
         "scaffold_area":      scaffold_area,
         "roof_scaffold_area": roof_scaffold_area,
         "guardman_count":     int(guardman_count),
@@ -159,16 +143,13 @@ def build_quantities(raw: dict) -> dict:
         "do_transport":       True,
         "do_road_permit":     True,
         "do_protection_pipe": False,
-        # 屋根
         "do_roof":            do_roof,
         "roof_area":          roof_area,
         "roof_type":          roof_type,
         "roof_paint_spec":    "クールタイトSi",
-        # 外壁
         "wall_area":          wall_area,
         "wall_paint_spec":    "ラジカル塗料",
         "sub_paint_spec":     "クリーンマイルドシリコン",
-        # 付帯部
         "fascia_length":      fascia_length,
         "soffit_length":      soffit_length,
         "soffit_sqm":         0.0,
@@ -178,11 +159,9 @@ def build_quantities(raw: dict) -> dict:
         "beam_length":        0.0,
         "shutter_box_length": 0.0,
         "do_foundation":      bool(r.get("do_foundation", False)),
-        # シーリング
         "joint_seal_length":  joint_seal_length,
         "do_misc_seal":       True,
         "skylight_count":     0,
-        # 金額調整
         "misc_cost":          int(misc_cost),
         "discount":           int(discount),
     }
@@ -190,17 +169,6 @@ def build_quantities(raw: dict) -> dict:
 
 
 def extract_quantities(voice_text: str, llm) -> dict:
-    """
-    音声メモテキスト → 積算quantities dict（GPT抽出＋経験則補完）。
-    抽出した補足情報（顧客名・住所・notes等）も併せて返す。
-
-    Returns:
-        {
-          "quantities": {...},   # STEP3フォーム形式・calculate_from_quantitiesにそのまま渡せる
-          "raw":        {...},   # GPTの生抽出（確認・デバッグ用）
-          "extras":     {...},   # client_name / site_address / notes / floors / wall_type
-        }
-    """
     raw = _extract_raw(voice_text, llm)
     quantities = build_quantities(raw)
     extras = {
