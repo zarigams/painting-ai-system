@@ -1124,3 +1124,5 @@ elif st.session_state.step == 4:
     # ── デバッグ ─────────────────────────────────────────────
     with st.expander("🔍 デバッグ情報"):
         st.json(estimation)
+        st.markdown("**図面解析 生データ（GPT-4o返答）**")
+        st.json(st.session_state.get("drawing_data", {}))
