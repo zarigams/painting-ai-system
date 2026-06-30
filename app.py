@@ -640,14 +640,16 @@ elif st.session_state.step == 2:
                         quantities = build_quantities({})
 
                     if has_pdf:
-                        from core.drawing_analyzer import DrawingAnalyzer
+                        from core.drawing_analyzer import DrawingAnalyzer, CATEGORY_LABELS
                         da = DrawingAnalyzer(llm.api_key)
-                        drawing_data = da.analyze(
+                        drawing_data, annotated_img, annotations = da.analyze_with_annotations(
                             st.session_state.pdf_bytes,
                             stated_scale=st.session_state.get("drawing_scale", "不要"),
                             original_paper=st.session_state.get("original_paper"),
                         )
                         st.session_state.drawing_data = drawing_data
+                        st.session_state.drawing_annotated_img = annotated_img
+                        st.session_state.drawing_annotations = annotations
                         quantities = _merge_drawing(quantities, drawing_data)
 
                     if has_photos:
@@ -714,6 +716,47 @@ elif st.session_state.step == 2:
         extras = st.session_state.get("voice_extras", {})
         est    = st.session_state.estimation
         st.success("✅ 自動積算が完了しました！内容をご確認ください。")
+
+        # ── 図面読み取り確認ビュー ────────────────────────────
+        ann_img   = st.session_state.get("drawing_annotated_img")
+        ann_items = st.session_state.get("drawing_annotations", [])
+        if ann_img:
+            with st.expander("📐 図面読み取り確認（AIが何を読んだか）", expanded=True):
+                img_col, tbl_col = st.columns([2, 1])
+                with img_col:
+                    st.image(ann_img, caption="● 色付きマーカー = AIが読み取った寸法の位置",
+                             use_container_width=True)
+                    from core.drawing_analyzer import CATEGORY_LABELS
+                    color_hex = {"height": "#185FA5", "width": "#0F6E56", "roof": "#993C1D",
+                                 "scale": "#534AB7", "area": "#993C1D", "other": "#5F5E5A"}
+                    cats_shown = list(dict.fromkeys(a.get("category", "other") for a in ann_items))
+                    legend_cols = st.columns(min(len(cats_shown), 3) or 1)
+                    for i, cat in enumerate(cats_shown[:6]):
+                        hex_c = color_hex.get(cat, "#5F5E5A")
+                        lbl   = CATEGORY_LABELS.get(cat, cat)
+                        legend_cols[i % 3].markdown(
+                            f"<span style='color:{hex_c};font-size:1.1em'>●</span> {lbl}",
+                            unsafe_allow_html=True,
+                        )
+                with tbl_col:
+                    st.markdown("**読み取り結果一覧**")
+                    if ann_items:
+                        conf_jp = {"high": "✅ 確定", "medium": "⚠️ 推定", "low": "❓ 不鮮明"}
+                        rows = []
+                        for a in ann_items:
+                            val_str = f"{a.get('value', '')} {a.get('unit', '')}".strip()
+                            rows.append({
+                                "項目":       a.get("label", ""),
+                                "読み取り値": val_str,
+                                "信頼度":     conf_jp.get(a.get("confidence", "low"), "❓ 不鮮明"),
+                            })
+                        import pandas as pd
+                        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+                        low_items = [a.get("label") for a in ann_items if a.get("confidence") == "low"]
+                        if low_items:
+                            st.warning("⚠️ 不鮮明: " + "、".join(low_items) + "\n手動で確認・修正してください。")
+                    else:
+                        st.info("アノテーション情報なし")
 
         # ── 合計表示 ────────────────────────────────────────
         st.metric("合計（税込）", f"¥{est.get('total', 0):,}")
