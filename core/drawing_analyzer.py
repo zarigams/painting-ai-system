@@ -307,7 +307,7 @@ class DrawingAnalyzer:
                 {"role": "system", "content": DRAWING_SYSTEM_PROMPT_ANNOTATED},
                 {"role": "user",   "content": content},
             ],
-            max_tokens=2000,
+            max_tokens=4000,
             temperature=0.1,
         )
 
@@ -323,10 +323,15 @@ class DrawingAnalyzer:
         if images and annotations:
             try:
                 annotated_bytes = self._draw_annotations(images[0], annotations)
-            except Exception:
-                annotated_bytes = images[0]  # 描画失敗時は元画像をそのまま使う
+            except Exception as draw_err:
+                result["_draw_error"] = str(draw_err)
+                annotated_bytes = images[0]
         elif images:
             annotated_bytes = images[0]
+
+        # デバッグ用: 生の返答を保持
+        result["_raw_gpt_response"] = raw
+        result["_annotations_count"] = len(annotations)
 
         return result, annotated_bytes, annotations
 

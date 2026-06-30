@@ -1220,4 +1220,18 @@ elif st.session_state.step == 4:
     with st.expander("🔍 デバッグ情報"):
         st.json(estimation)
         st.markdown("**図面解析 生データ（GPT-4o返答）**")
-        st.json(st.session_state.get("drawing_data", {}))
+        drawing_dbg = st.session_state.get("drawing_data", {})
+        ann_count = drawing_dbg.get("_annotations_count", "未実行")
+        raw_resp  = drawing_dbg.get("_raw_gpt_response", "")
+        st.metric("annotations 取得件数", ann_count)
+        if raw_resp:
+            st.markdown("**GPT-4o 生テキスト（JSONパース前）**")
+            st.code(raw_resp, language="json")
+        else:
+            st.info("図面解析未実行 or 生テキスト未取得")
+        draw_err = drawing_dbg.get("_draw_error")
+        if draw_err:
+            st.error(f"マーカー描画エラー: {draw_err}")
+        st.markdown("**パース済みデータ**")
+        st.json({k: v for k, v in drawing_dbg.items()
+                 if not k.startswith("_raw")})
