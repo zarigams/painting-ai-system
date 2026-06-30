@@ -658,8 +658,6 @@ elif st.session_state.step == 2:
                             )
                         except Exception:
                             st.session_state.drawing_page1_raw = annotated_img
-                        # 図面が変わったので前回の4面検出結果をクリア
-                        st.session_state.pop("drawing_faces", None)
                         quantities = _merge_drawing(quantities, drawing_data)
 
                     if has_photos:
@@ -780,19 +778,17 @@ elif st.session_state.step == 2:
                 st.image(_img, caption=_caption, use_container_width=True)
                 st.caption("※ さらに拡大: ブラウザのズーム（Ctrl + マウスホイール）もご利用ください")
 
-            # 画像を割合(0〜100%)のボックスで切り出すヘルパー（③）
-            def _crop_pct(_img_bytes, _box, _pad=2.0):
+            # 画像を上下2段×左右2列の4等分で切り出すヘルパー（③）
+            def _crop_quad(_img_bytes, _row, _col):
                 from PIL import Image as _PImg
                 import io as _io2
                 _im = _PImg.open(_io2.BytesIO(_img_bytes))
                 _w, _h = _im.size
-                _x1 = max(0,  (min(_box["x1_pct"], _box["x2_pct"]) - _pad) / 100 * _w)
-                _x2 = min(_w, (max(_box["x1_pct"], _box["x2_pct"]) + _pad) / 100 * _w)
-                _y1 = max(0,  (min(_box["y1_pct"], _box["y2_pct"]) - _pad) / 100 * _h)
-                _y2 = min(_h, (max(_box["y1_pct"], _box["y2_pct"]) + _pad) / 100 * _h)
-                if _x2 - _x1 < 10 or _y2 - _y1 < 10:
-                    return _img_bytes
-                _crop = _im.crop((int(_x1), int(_y1), int(_x2), int(_y2)))
+                _x1 = _col * _w // 2
+                _x2 = (_col + 1) * _w // 2
+                _y1 = _row * _h // 2
+                _y2 = (_row + 1) * _h // 2
+                _crop = _im.crop((_x1, _y1, _x2, _y2))
                 _out = _io2.BytesIO()
                 _crop.save(_out, format="PNG")
                 return _out.getvalue()
@@ -960,63 +956,44 @@ elif st.session_state.step == 2:
                     _zoom_dialog(drawing_img_bytes, "図面全体（AI読み取りマーカー付き）")
                 _render_click_ruler(drawing_img_bytes, ns="ruler")
 
-            # ── ③ 4面分割表示（南・北・東・西を個別に計測） ──
+            # ── ③ 4面分割表示（図面を4等分し、各パネルで面ラベルを選んで計測） ──
             with st.expander("🪟 4面分割表示（南・北・東・西を個別に計測）", expanded=False):
                 st.caption(
-                    "PDF1ページに並んだ南・北・東・西の立面図をAIが判定し、"
-                    "各面を切り出して個別パネルで計測・拡大できます。"
+                    "図面を上下2段×左右2列の4ブロックに分割します。"
+                    "各パネルのドロップダウンで南・北・東・西を割り当て、個別に計測・拡大できます。"
                 )
-                _fc1, _fc2 = st.columns(2)
-                with _fc1:
-                    if st.button("🤖 AIで4面を自動検出", type="primary",
-                                 use_container_width=True, key="detect_faces"):
-                        try:
-                            from modules.llm_client import LLMClient
-                            from core.drawing_analyzer import DrawingAnalyzer
-                            _llm = LLMClient()
-                            _da = DrawingAnalyzer(_llm.api_key)
-                            with st.spinner("各面の領域をAIが解析中..."):
-                                st.session_state.drawing_faces = _da.detect_faces(drawing_raw_bytes)
-                            st.rerun()
-                        except Exception as _fe:
-                            st.error(f"4面検出エラー: {_fe}")
-                with _fc2:
-                    if st.session_state.get("drawing_faces") and st.button(
-                        "🗑️ 検出結果をクリア", use_container_width=True, key="clear_faces"
-                    ):
-                        st.session_state.pop("drawing_faces", None)
-                        st.rerun()
-
-                _faces = st.session_state.get("drawing_faces") or []
-                if _faces:
-                    _face_codes = {"南面": "south", "北面": "north", "東面": "east", "西面": "west"}
-                    _by_face = {f.get("face"): f for f in _faces}
-                    _tabs = st.tabs(list(_face_codes.keys()))
-                    for _ti, (_fname, _fcode) in enumerate(_face_codes.items()):
-                        with _tabs[_ti]:
-                            _box = _by_face.get(_fname)
-                            if (not _box or not _box.get("found", True)
-                                    or "x1_pct" not in _box or "x2_pct" not in _box):
-                                st.warning(
-                                    f"{_fname}の立面図を自動検出できませんでした。"
-                                    "上の「📏 図面クリック計測」で全体図から計測してください。"
-                                )
-                                continue
-                            _crop_bytes = _crop_pct(drawing_raw_bytes, _box, _pad=2.0)
-                            st.image(_crop_bytes, caption=f"{_fname} 立面図（AI切り出し）",
-                                     use_container_width=True)
-                            if st.button("🔍 この面を拡大表示", use_container_width=True,
-                                         key=f"zoom_{_fcode}"):
-                                _zoom_dialog(_crop_bytes, f"{_fname} 立面図")
-                            st.divider()
-                            _render_click_ruler(
-                                _crop_bytes,
-                                ns=f"face_{_fcode}",
-                                labels=["縮尺基準線", f"{_fname}幅"],
-                                reflect_map={f"{_fname}幅": f"ruler_{_fcode}_w"},
-                            )
-                else:
-                    st.info("「🤖 AIで4面を自動検出」を押すと、各面が個別パネルで表示されます。")
+                _face_opts = ["南面", "北面", "東面", "西面"]
+                _face_code = {"南面": "south", "北面": "north", "東面": "east", "西面": "west"}
+                # 各ブロック: (位置キー, 行, 列, タブ名, 既定の面ラベル)
+                _quads = [
+                    ("tl", 0, 0, "左上", "南面"),
+                    ("tr", 0, 1, "右上", "北面"),
+                    ("bl", 1, 0, "左下", "東面"),
+                    ("br", 1, 1, "右下", "西面"),
+                ]
+                _tabs = st.tabs([q[3] for q in _quads])
+                for _ti, (_pos, _r, _c, _tabname, _default) in enumerate(_quads):
+                    with _tabs[_ti]:
+                        _sel_face = st.selectbox(
+                            "この面の向き（入れ替え可）",
+                            _face_opts,
+                            index=_face_opts.index(_default),
+                            key=f"facesel_{_pos}",
+                        )
+                        _fcode = _face_code[_sel_face]
+                        _quad_bytes = _crop_quad(drawing_raw_bytes, _r, _c)
+                        st.image(_quad_bytes, caption=f"{_sel_face}（{_tabname}ブロック）",
+                                 use_container_width=True)
+                        if st.button("🔍 この面を拡大表示", use_container_width=True,
+                                     key=f"zoom_{_pos}"):
+                            _zoom_dialog(_quad_bytes, f"{_sel_face}（{_tabname}ブロック）")
+                        st.divider()
+                        _render_click_ruler(
+                            _quad_bytes,
+                            ns=f"quad_{_pos}",
+                            labels=["縮尺基準線", f"{_sel_face}幅"],
+                            reflect_map={f"{_sel_face}幅": f"ruler_{_fcode}_w"},
+                        )
 
                 # ── 幾何学計算ビュー（4面個別入力） ───────────────────────
         drawing_data_geo = st.session_state.get("drawing_data", {})

@@ -142,34 +142,6 @@ CATEGORY_LABELS = {
     "other":  "その他",
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4面分割（立面図領域）検出用プロンプト
-# ─────────────────────────────────────────────────────────────────────────────
-FACE_DETECT_PROMPT = """
-あなたは建築図面のレイアウト解析AIです。
-1枚の画像の中に複数の立面図（南立面図・北立面図・東立面図・西立面図）が並んでいます。
-それぞれの立面図が画像内のどの矩形領域にあるかを、画像左上を(0,0)・右下を(100,100)とする
-パーセント座標のバウンディングボックスで特定してください。
-
-## 判定方法
-- 図中の「南立面図」「北面」「東(EAST)」等のラベル文字や、建物形状の向きから各面を判断する
-- 立面図ではない図（平面図・配置図・断面図・矩計図・タイトル枠）は対象外
-- 各立面図の外形（壁・屋根）を囲むようにボックスを取り、寸法線やラベル文字も少し含めてよい
-- 見つからない面は found:false とし、座標は 0 でよい
-
-## 出力（JSONのみ。説明文不要）
-{
-  "faces": [
-    {"face":"南面","found":true,"x1_pct":2,"y1_pct":52,"x2_pct":48,"y2_pct":96},
-    {"face":"北面","found":true,"x1_pct":52,"y1_pct":52,"x2_pct":98,"y2_pct":96},
-    {"face":"東面","found":true,"x1_pct":2,"y1_pct":5,"x2_pct":48,"y2_pct":48},
-    {"face":"西面","found":true,"x1_pct":52,"y1_pct":5,"x2_pct":98,"y2_pct":48}
-  ]
-}
-face は必ず "南面","北面","東面","西面" の4つすべてを返すこと。
-"""
-
-
 class DrawingAnalyzer:
     """建築図面PDFを解析して建物情報を返す"""
 
@@ -360,33 +332,6 @@ class DrawingAnalyzer:
         result["_annotations_count"] = len(annotations)
 
         return result, annotated_bytes, annotations
-
-    def detect_faces(self, image_bytes: bytes) -> list:
-        """
-        1枚の図面画像から南・北・東・西の立面図の領域（%バウンディングボックス）を検出する。
-        戻り値: [{face, found, x1_pct, y1_pct, x2_pct, y2_pct}, ...]
-        """
-        b64 = base64.b64encode(image_bytes).decode("utf-8")
-        content = [
-            {"type": "text",
-             "text": "この図面画像から南・北・東・西の各立面図の領域をJSONで返してください。"},
-            {"type": "image_url",
-             "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"}},
-        ]
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": FACE_DETECT_PROMPT},
-                {"role": "user",   "content": content},
-            ],
-            max_tokens=800,
-            temperature=0.0,
-        )
-        raw = response.choices[0].message.content
-        data = self._parse_response(raw)
-        if isinstance(data, dict):
-            return data.get("faces", []) or []
-        return []
 
     def _draw_annotations(self, img_bytes: bytes, annotations: list) -> bytes:
         """PILで画像に寸法アノテーション（丸マーカー＋幅矢印）を書き込んで返す"""
