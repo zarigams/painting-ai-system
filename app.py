@@ -758,7 +758,7 @@ elif st.session_state.step == 2:
                     else:
                         st.info("アノテーション情報なし")
 
-        # ── 幾何学計算ビュー ─────────────────────────────────
+        # ── 幾何学計算ビュー（4面個別入力） ───────────────────────
         drawing_data_geo = st.session_state.get("drawing_data", {})
         ann_items_geo    = st.session_state.get("drawing_annotations", [])
 
@@ -777,64 +777,127 @@ elif st.session_state.step == 2:
         south_w = _ann_val("南面幅", ann_items_geo)
         east_w  = _ann_val("東面幅", ann_items_geo)
 
-        # fallback: drawing_data に高さが入っている場合
         if ridge_h is None:
-            ridge_h = 8.693  # デフォルト（読み取り済みの場合のみ）
+            ridge_h = 8.693
         if eave_h is None:
             eave_h  = 6.500
 
-        with st.expander("📐 幾何学計算（正確な面積算出）", expanded=(south_w is None)):
-            st.caption(f"棟高さ: {ridge_h} m　軒高: {eave_h} m　→　屋根立ち上がり: {round(ridge_h - eave_h, 3)} m（確定）")
-
-            gc1, gc2 = st.columns(2)
-            south_w_input = gc1.number_input(
-                "南面の幅（m）※図面から計測",
-                min_value=0.0, max_value=50.0,
-                value=float(south_w) if south_w else 0.0,
-                step=0.1, format="%.2f",
-                help="南面（正面）の建物幅を図面から読んで入力してください。1つ入れるだけで全面積が計算できます。"
+        with st.expander("📐 幾何学計算（4面個別入力・正確な面積算出）", expanded=True):
+            st.markdown("##### 🏠 高さ（共通）")
+            hc1, hc2 = st.columns(2)
+            ridge_h_input = hc1.number_input(
+                "棟高（m）", min_value=0.0, max_value=20.0,
+                value=float(ridge_h), step=0.1, format="%.3f",
+                help="GL（地盤面）から棟頂部までの高さ"
             )
-            east_w_input = gc2.number_input(
-                "東面の幅（m）※図面から計測",
-                min_value=0.0, max_value=50.0,
-                value=float(east_w) if east_w else 0.0,
-                step=0.1, format="%.2f",
-                help="東面（側面）の建物幅（奥行き方向）を入力してください。"
+            eave_h_input = hc2.number_input(
+                "軒高（m）", min_value=0.0, max_value=15.0,
+                value=float(eave_h), step=0.1, format="%.3f",
+                help="GL（地盤面）から軒先までの高さ"
             )
+            rise_preview = round(ridge_h_input - eave_h_input, 3)
+            st.caption(f"屋根立上がり: **{rise_preview} m**")
 
-            if south_w_input > 0 and east_w_input > 0:
-                from core.drawing_calc import calc_geometry
-                geo = calc_geometry(
-                    south_width_m=south_w_input,
-                    east_width_m=east_w_input,
-                    ridge_height_m=ridge_h,
-                    eave_height_m=eave_h,
+            st.markdown("##### 📏 各面の幅（図面から計測）")
+            st.caption("南面・東面は必須。北面・西面が南面・東面と異なる場合のみ入力（L字・凹凸のある建物）")
+            wc1, wc2, wc3, wc4 = st.columns(4)
+            s_w = wc1.number_input("南面幅（m）", min_value=0.0, max_value=50.0,
+                value=float(south_w) if south_w else 0.0, step=0.1, format="%.2f")
+            n_w = wc2.number_input("北面幅（m）", min_value=0.0, max_value=50.0,
+                value=0.0, step=0.1, format="%.2f",
+                help="南面と同じ場合は 0 のまま")
+            e_w = wc3.number_input("東面幅（m）", min_value=0.0, max_value=50.0,
+                value=float(east_w) if east_w else 0.0, step=0.1, format="%.2f")
+            w_w = wc4.number_input("西面幅（m）", min_value=0.0, max_value=50.0,
+                value=0.0, step=0.1, format="%.2f",
+                help="東面と同じ場合は 0 のまま")
+
+            st.markdown("##### 📐 屋根勾配")
+            slope_mode = st.radio("勾配の指定方法", ["高さから自動計算", "勾配を直接入力（寸）"],
+                                  horizontal=True, label_visibility="collapsed")
+            if slope_mode == "勾配を直接入力（寸）":
+                koun_input = st.number_input(
+                    "屋根勾配（寸）", min_value=1.0, max_value=12.0,
+                    value=6.0, step=0.5, format="%.1f",
+                    help="6寸 = 10の水平距離に対して6の高さ。図面凡例や構造図から確認してください。"
+                )
+                import math
+                angle_rad_input = math.atan(koun_input / 10.0)
+                st.caption(f"→ {round(math.degrees(angle_rad_input), 1)}° / cos(θ) = {round(math.cos(angle_rad_input), 4)}")
+                use_direct_slope = True
+            else:
+                koun_input = None
+                angle_rad_input = None
+                use_direct_slope = False
+
+            st.markdown("##### 🪟 開口控除（窓・玄関等）")
+            oc_mode = st.radio("控除方法", ["一律控除率（%）", "面ごとに開口面積を入力（㎡）"],
+                               horizontal=True, label_visibility="collapsed")
+            if oc_mode == "一律控除率（%）":
+                ded_rate_pct = st.slider("開口控除率", 5, 30, 15, step=1,
+                    help="標準は15%（窓・玄関等を差し引く割合）")
+                ded_rate = ded_rate_pct / 100.0
+                so_m2 = no_m2 = eo_m2 = wo_m2 = 0.0
+            else:
+                ded_rate = 0.0  # per-face 入力使用時は率を0にして個別値で控除
+                oc1, oc2, oc3, oc4 = st.columns(4)
+                so_m2 = oc1.number_input("南面開口（㎡）", min_value=0.0, max_value=100.0, step=0.5, format="%.1f")
+                no_m2 = oc2.number_input("北面開口（㎡）", min_value=0.0, max_value=100.0, step=0.5, format="%.1f")
+                eo_m2 = oc3.number_input("東面開口（㎡）", min_value=0.0, max_value=100.0, step=0.5, format="%.1f")
+                wo_m2 = oc4.number_input("西面開口（㎡）", min_value=0.0, max_value=100.0, step=0.5, format="%.1f")
+
+            if s_w > 0 and e_w > 0:
+                from core.drawing_calc import calc_geometry_4face
+                import pandas as pd
+                geo = calc_geometry_4face(
+                    south_width_m=s_w, north_width_m=n_w,
+                    east_width_m=e_w,  west_width_m=w_w,
+                    ridge_height_m=ridge_h_input, eave_height_m=eave_h_input,
+                    south_opening_m2=so_m2, north_opening_m2=no_m2,
+                    east_opening_m2=eo_m2,  west_opening_m2=wo_m2,
+                    opening_deduction_rate=ded_rate,
+                    angle_rad_override=angle_rad_input if use_direct_slope else None,
                 )
                 st.session_state["geo_result"] = geo
 
-                # 計算根拠テーブル
-                import pandas as pd
-                calc_rows = [
-                    {"項目": "屋根勾配",         "計算式": f"arctan({geo['rise_m']} ÷ {geo['run_m']})",          "結果": f"{geo['koun']}寸勾配  ({geo['angle_deg']}°)"},
-                    {"項目": "垂木長（実長）",     "計算式": f"√({geo['run_m']}² + {geo['rise_m']}²)",            "結果": f"{geo['rafter_length_m']} m"},
-                    {"項目": "外壁（南・北）",     "計算式": f"{south_w_input} m × {eave_h} m × 2面",             "結果": f"{geo['wall_south_m2'] + geo['wall_north_m2']:.2f} ㎡"},
-                    {"項目": "外壁（東・西）",     "計算式": f"{east_w_input} m × {eave_h} m × 2面",              "結果": f"{geo['wall_east_m2'] + geo['wall_west_m2']:.2f} ㎡"},
-                    {"項目": "外壁合計（総）",     "計算式": "南北 + 東西",                                        "結果": f"{geo['wall_gross_m2']} ㎡"},
-                    {"項目": "外壁（開口控除後）", "計算式": f"{geo['wall_gross_m2']} × {int(geo['opening_deduction_rate']*100)}%", "結果": f"**{geo['wall_net_m2']} ㎡**"},
-                    {"項目": "床面積（フットプリント）", "計算式": f"{south_w_input} × {east_w_input}",             "結果": f"{geo['footprint_m2']} ㎡"},
-                    {"項目": "屋根面積",           "計算式": f"{geo['footprint_m2']} ÷ cos({geo['angle_deg']}°)", "結果": f"**{geo['roof_area_m2']} ㎡**"},
+                # 各面の内訳テーブル
+                st.markdown("##### 📊 外壁 — 面ごとの計算")
+                n_label = f"{geo['north_width_m']}m" + (" ※南面と同値" if n_w == 0 else "")
+                w_label = f"{geo['west_width_m']}m"  + (" ※東面と同値" if w_w == 0 else "")
+                wall_rows = [
+                    {"面":  "南", "幅（m）": geo["south_width_m"], "軒高（m）": eave_h_input,
+                     "総面積（㎡）": geo["wall_south_gross"], "控除（㎡）": round(geo["wall_south_gross"] - geo["wall_south_net"], 2), "正味面積（㎡）": geo["wall_south_net"]},
+                    {"面":  "北", "幅（m）": geo["north_width_m"], "軒高（m）": eave_h_input,
+                     "総面積（㎡）": geo["wall_north_gross"], "控除（㎡）": round(geo["wall_north_gross"] - geo["wall_north_net"], 2), "正味面積（㎡）": geo["wall_north_net"]},
+                    {"面":  "東", "幅（m）": geo["east_width_m"],  "軒高（m）": eave_h_input,
+                     "総面積（㎡）": geo["wall_east_gross"],  "控除（㎡）": round(geo["wall_east_gross"]  - geo["wall_east_net"],  2), "正味面積（㎡）": geo["wall_east_net"]},
+                    {"面":  "西", "幅（m）": geo["west_width_m"],  "軒高（m）": eave_h_input,
+                     "総面積（㎡）": geo["wall_west_gross"],  "控除（㎡）": round(geo["wall_west_gross"]  - geo["wall_west_net"],  2), "正味面積（㎡）": geo["wall_west_net"]},
+                    {"面": "合計", "幅（m）": "—", "軒高（m）": "—",
+                     "総面積（㎡）": geo["wall_gross_total"], "控除（㎡）": round(geo["wall_gross_total"] - geo["wall_net_total"], 2), "正味面積（㎡）": geo["wall_net_total"]},
                 ]
-                st.dataframe(pd.DataFrame(calc_rows), hide_index=True, use_container_width=True)
+                st.dataframe(pd.DataFrame(wall_rows), hide_index=True, use_container_width=True)
 
-                ra1, ra2 = st.columns(2)
-                ra1.metric("外壁面積（計算値）", f"{geo['wall_net_m2']} ㎡",
-                           delta=f"総面積 {geo['wall_gross_m2']}㎡ の85%")
-                ra2.metric("屋根面積（計算値）", f"{geo['roof_area_m2']} ㎡",
-                           delta=f"{geo['koun']}寸勾配 / {geo['angle_deg']}°")
+                # 屋根テーブル
+                st.markdown("##### 🏠 屋根")
+                roof_rows = [
+                    {"項目": "屋根勾配",             "値": f"{geo['koun']}寸勾配（{geo['angle_deg']}°）"},
+                    {"項目": "垂木長（実長）",         "値": f"{geo['rafter_length_m']} m"},
+                    {"項目": "フットプリント（平均幅）", "値": f"{geo['avg_ns_m']} m × {geo['avg_ew_m']} m = {geo['footprint_m2']} ㎡"},
+                    {"項目": "屋根面積（勾配補正後）",  "値": f"{geo['footprint_m2']} ÷ cos({geo['angle_deg']}°) = **{geo['roof_area_m2']} ㎡**"},
+                ]
+                st.dataframe(pd.DataFrame(roof_rows), hide_index=True, use_container_width=True)
+
+                # メトリクス
+                m1, m2 = st.columns(2)
+                m1.metric("外壁面積（正味）", f"{geo['wall_net_total']} ㎡",
+                          delta=f"総計 {geo['wall_gross_total']}㎡ → 控除後")
+                m2.metric("屋根面積", f"{geo['roof_area_m2']} ㎡",
+                          delta=f"{geo['koun']}寸勾配 / {geo['angle_deg']}°")
 
                 if st.button("✅ この計算値を見積もりに使う", type="primary", use_container_width=True):
                     from core.quantity_calculator import calculate_from_quantities
-                    q["wall_area"]  = geo["wall_net_m2"]
+                    q["wall_area"]  = geo["wall_net_total"]
                     q["roof_area"]  = geo["roof_area_m2"]
                     st.session_state.quantities = q
                     st.session_state.estimation = calculate_from_quantities(
@@ -846,7 +909,7 @@ elif st.session_state.step == 2:
                     st.success("✅ 計算値を反映しました")
                     st.rerun()
             else:
-                st.info("南面・東面の幅を入力すると、屋根勾配・外壁・屋根面積が自動計算されます。")
+                st.info("南面・東面の幅を入力すると、屋根勾配・各面の外壁・屋根面積が自動計算されます。")
 
         # ── 合計表示 ────────────────────────────────────────
         st.metric("合計（税込）", f"¥{est.get('total', 0):,}")
