@@ -650,6 +650,16 @@ elif st.session_state.step == 2:
                         st.session_state.drawing_data = drawing_data
                         st.session_state.drawing_annotated_img = annotated_img
                         st.session_state.drawing_annotations = annotations
+                        # 4面分割用に1ページ目の生画像（マーカー無し）を保持
+                        try:
+                            _raw_imgs, _ = da.pdf_to_images(st.session_state.pdf_bytes)
+                            st.session_state.drawing_page1_raw = (
+                                _raw_imgs[0] if _raw_imgs else annotated_img
+                            )
+                        except Exception:
+                            st.session_state.drawing_page1_raw = annotated_img
+                        # 図面が変わったので前回の4面検出結果をクリア
+                        st.session_state.pop("drawing_faces", None)
                         quantities = _merge_drawing(quantities, drawing_data)
 
                     if has_photos:
@@ -760,46 +770,78 @@ elif st.session_state.step == 2:
 
         # ── 図面クリック計測 ───────────────────────────────────
         drawing_img_bytes = st.session_state.get("drawing_annotated_img")
+        # 4面分割で使う1ページ目の生画像（マーカー無し）。無ければ注釈付き画像で代用。
+        drawing_raw_bytes = st.session_state.get("drawing_page1_raw") or drawing_img_bytes
         if drawing_img_bytes:
 
-            # クリックのたびに全ページが再実行されないよう、計測UIを fragment 化する。
-            # fragment 内の st.rerun(scope="fragment") はこのブロックだけを再描画するため、
-            # 1点クリックごとのページ全体リロードが無くなり、操作が軽快になる。
+            # ② 図面拡大表示用ダイアログ
+            @st.dialog("🔍 図面拡大表示", width="large")
+            def _zoom_dialog(_img, _caption=""):
+                st.image(_img, caption=_caption, use_container_width=True)
+                st.caption("※ さらに拡大: ブラウザのズーム（Ctrl + マウスホイール）もご利用ください")
+
+            # 画像を割合(0〜100%)のボックスで切り出すヘルパー（③）
+            def _crop_pct(_img_bytes, _box, _pad=2.0):
+                from PIL import Image as _PImg
+                import io as _io2
+                _im = _PImg.open(_io2.BytesIO(_img_bytes))
+                _w, _h = _im.size
+                _x1 = max(0,  (min(_box["x1_pct"], _box["x2_pct"]) - _pad) / 100 * _w)
+                _x2 = min(_w, (max(_box["x1_pct"], _box["x2_pct"]) + _pad) / 100 * _w)
+                _y1 = max(0,  (min(_box["y1_pct"], _box["y2_pct"]) - _pad) / 100 * _h)
+                _y2 = min(_h, (max(_box["y1_pct"], _box["y2_pct"]) + _pad) / 100 * _h)
+                if _x2 - _x1 < 10 or _y2 - _y1 < 10:
+                    return _img_bytes
+                _crop = _im.crop((int(_x1), int(_y1), int(_x2), int(_y2)))
+                _out = _io2.BytesIO()
+                _crop.save(_out, format="PNG")
+                return _out.getvalue()
+
+            # クリック計測UI。fragment 化してクリック毎の全ページ再実行を防ぐ。
+            # ns で session_state を名前空間化し、全体図＋4面パネルを独立動作させる。
             @st.fragment
-            def _render_click_ruler(_img_bytes):
+            def _render_click_ruler(_img_bytes, ns="ruler", labels=None,
+                                    reflect_map=None, scale_default=9.10):
                 try:
                     from streamlit_image_coordinates import streamlit_image_coordinates
                     from PIL import Image, ImageDraw
-                    from core.pixel_ruler import line_px_length, LABELS, COLORS
+                    from core.pixel_ruler import LABELS, COLORS
                     import io as _io, math as _math
+
+                    _labels = labels or LABELS
+                    _reflect = reflect_map if reflect_map is not None else {
+                        "南面幅": "ruler_south_w", "北面幅": "ruler_north_w",
+                        "東面幅": "ruler_east_w",  "西面幅": "ruler_west_w",
+                    }
+                    _k_pts, _k_pending, _k_last = f"{ns}_pts", f"{ns}_pending", f"{ns}_last_coord"
 
                     _pil_orig = Image.open(_io.BytesIO(_img_bytes))
                     _orig_w, _orig_h = _pil_orig.size
-                    _disp_w = 900
+                    _disp_w = 900 if _orig_w >= 900 else _orig_w
                     _scale_r = _orig_w / _disp_w
                     _disp_h  = int(_orig_h / _scale_r)
                     _pil_disp = _pil_orig.resize((_disp_w, _disp_h), Image.LANCZOS)
 
-                    # セッション初期化
-                    if "ruler_pts" not in st.session_state:
-                        st.session_state.ruler_pts = []      # [{label, x1,y1,x2,y2}]
-                    if "ruler_pending" not in st.session_state:
-                        st.session_state.ruler_pending = None  # {label, x1, y1}
-                    if "ruler_last_coord" not in st.session_state:
-                        st.session_state.ruler_last_coord = None
+                    # セッション初期化（名前空間ごと）
+                    if _k_pts not in st.session_state:
+                        st.session_state[_k_pts] = []      # [{label, x1,y1,x2,y2}]
+                    if _k_pending not in st.session_state:
+                        st.session_state[_k_pending] = None  # {label, x1, y1}
+                    if _k_last not in st.session_state:
+                        st.session_state[_k_last] = None
 
-                    # ── 使い方ガイド（図の上に3ステップ表示） ──
+                    # ③ 使い方ガイド（図の上に3ステップ表示）
                     st.markdown(
                         "##### 📖 使い方（3ステップ）\n"
-                        "1. **縮尺線を2点クリック** … 図面で寸法が分かっている線（例: 9.10m）の両端をクリック\n"
-                        "2. **実寸を入力** … 下に出る「縮尺基準線の実長（m）」へ図面の数値を入力\n"
-                        "3. **各面の幅を測定** … ラベルを選ぶ（自由入力も可）→ 測りたい線を2点クリック"
+                        "1. **縮尺線を2点クリック** … 寸法が分かっている線（例: 9.10m）の両端をクリック\n"
+                        "2. **実寸を入力** … 下の「縮尺基準線の実長（m）」へ図面の数値を入力\n"
+                        "3. **幅を測定** … ラベルを選ぶ（自由入力も可）→ 測りたい線を2点クリック"
                     )
 
-                    # クリック済みの線をプレビュー表示
+                    # クリック済みの線をプレビュー描画
                     _preview = _pil_disp.copy()
                     _draw = ImageDraw.Draw(_preview)
-                    for _seg in st.session_state.ruler_pts:
+                    for _seg in st.session_state[_k_pts]:
                         _col = COLORS.get(_seg["label"], "#FF0000")
                         _rgb = tuple(int(_col.lstrip("#")[i:i+2],16) for i in (0,2,4))
                         _draw.line([(_seg["x1"],_seg["y1"]),(_seg["x2"],_seg["y2"])],
@@ -807,26 +849,23 @@ elif st.session_state.step == 2:
                         _mx, _my = (_seg["x1"]+_seg["x2"])//2, (_seg["y1"]+_seg["y2"])//2
                         _draw.ellipse([_mx-4,_my-4,_mx+4,_my+4], fill=_rgb)
                     # 待機中の1点目
-                    if st.session_state.ruler_pending:
-                        _px = st.session_state.ruler_pending["x1"]
-                        _py = st.session_state.ruler_pending["y1"]
+                    if st.session_state[_k_pending]:
+                        _px = st.session_state[_k_pending]["x1"]
+                        _py = st.session_state[_k_pending]["y1"]
                         _draw.ellipse([_px-6,_py-6,_px+6,_py+6], fill=(255,80,0), outline=(255,255,255), width=2)
 
-                    # 手順表示 ＋ ラベル選択（定型 or 自由入力）
-                    _pending = st.session_state.ruler_pending
+                    # 手順表示 ＋ ラベル選択（定型 or 自由入力）④
+                    _pending = st.session_state[_k_pending]
                     if _pending is None:
                         _col_a, _col_b = st.columns(2)
                         with _col_a:
                             _cur_label_sel = st.selectbox(
-                                "計測する項目（定型）",
-                                LABELS,
-                                key="ruler_cur_label",
+                                "計測する項目（定型）", _labels, key=f"{ns}_cur_label",
                             )
                         with _col_b:
                             _cur_label_free = st.text_input(
                                 "ラベル自由入力（入力時はこちらを優先）",
-                                key="ruler_free_label",
-                                placeholder="例: 玄関ポーチ幅",
+                                key=f"{ns}_free_label", placeholder="例: 玄関ポーチ幅",
                             )
                         _cur_label = _cur_label_free.strip() or _cur_label_sel
                         st.info(f"📍 **{_cur_label}** の **開始点** をクリックしてください")
@@ -837,60 +876,51 @@ elif st.session_state.step == 2:
                     # 画像クリック受付
                     # streamlit-image-coordinates はクリック位置にライブラリ自身が
                     # 赤いマーカーを描画し、それが次のクリックまでブラウザ側に残る。
-                    # 計測状態（確定済み本数・待機中フラグ）が変わるたびに key を変えて
-                    # コンポーネントを再マウントし、前回の赤い始点マーカーを消す。
-                    _ruler_key = (
-                        f"ruler_img_{len(st.session_state.ruler_pts)}"
-                        f"_{'p' if st.session_state.ruler_pending else 'n'}"
-                    )
+                    # 計測状態が変わるたびに key を変えて再マウントし、赤マーカーを消す。
+                    _ruler_key = f"{ns}_img_{len(st.session_state[_k_pts])}_{'p' if _pending else 'n'}"
                     _coord = streamlit_image_coordinates(_preview, key=_ruler_key, width=_disp_w)
 
                     # クリック処理（新しいクリックのみ）
-                    if _coord and _coord != st.session_state.ruler_last_coord:
-                        st.session_state.ruler_last_coord = _coord
+                    if _coord and _coord != st.session_state[_k_last]:
+                        st.session_state[_k_last] = _coord
                         cx, cy = _coord["x"], _coord["y"]
-                        if st.session_state.ruler_pending is None:
-                            # 1点目
-                            st.session_state.ruler_pending = {
-                                "label": _cur_label, "x1": cx, "y1": cy
-                            }
+                        if st.session_state[_k_pending] is None:
+                            st.session_state[_k_pending] = {"label": _cur_label, "x1": cx, "y1": cy}
                         else:
-                            # 2点目 → 線を確定
-                            p = st.session_state.ruler_pending
+                            p = st.session_state[_k_pending]
                             px_len = _math.sqrt((cx-p["x1"])**2 + (cy-p["y1"])**2)
-                            st.session_state.ruler_pts.append({
-                                "label": p["label"],
-                                "x1": p["x1"], "y1": p["y1"],
-                                "x2": cx,      "y2": cy,
+                            st.session_state[_k_pts].append({
+                                "label": p["label"], "x1": p["x1"], "y1": p["y1"],
+                                "x2": cx, "y2": cy,
                                 "px_disp": round(px_len, 1),
                                 "px_orig": round(px_len * _scale_r, 1),
                             })
-                            st.session_state.ruler_pending = None
-                        # fragment だけ再描画（ページ全体リロードを避ける）
-                        st.rerun(scope="fragment")
+                            st.session_state[_k_pending] = None
+                        st.rerun(scope="fragment")  # fragment だけ再描画
 
                     # 計測結果テーブル
-                    if st.session_state.ruler_pts:
+                    if st.session_state[_k_pts]:
                         import pandas as pd
                         st.markdown("**計測済みの線**")
                         _rows = [{"ラベル": s["label"], "ピクセル長（表示）": s["px_disp"]}
-                                 for s in st.session_state.ruler_pts]
+                                 for s in st.session_state[_k_pts]]
                         st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
 
-                        # 縮尺基準線があれば変換
-                        _ref_segs = [s for s in st.session_state.ruler_pts if s["label"] == "縮尺基準線"]
+                        # 縮尺基準線があれば実寸換算
+                        _ref_segs = [s for s in st.session_state[_k_pts] if s["label"] == "縮尺基準線"]
                         if _ref_segs:
                             _ref_real = st.number_input(
                                 "縮尺基準線の実長（m）",
-                                min_value=0.1, max_value=100.0, value=9.10, step=0.01, format="%.2f",
-                                help="図面の寸法数字を確認してここに入力"
+                                min_value=0.1, max_value=100.0, value=scale_default,
+                                step=0.01, format="%.2f", key=f"{ns}_ref_real",
+                                help="図面の寸法数字を確認してここに入力",
                             )
                             _mpp = _ref_real / _ref_segs[0]["px_disp"] if _ref_segs[0]["px_disp"] > 0 else 0
 
                             if _mpp > 0:
                                 _result_rows = []
                                 _label_vals = {}
-                                for s in st.session_state.ruler_pts:
+                                for s in st.session_state[_k_pts]:
                                     if s["label"] == "縮尺基準線":
                                         continue
                                     _m = round(s["px_disp"] * _mpp, 3)
@@ -901,11 +931,11 @@ elif st.session_state.step == 2:
                                     st.markdown("**実寸換算結果**")
                                     st.dataframe(pd.DataFrame(_result_rows), hide_index=True, use_container_width=True)
 
-                                    if st.button("📐 下の計算フォームに反映", type="primary", use_container_width=True):
-                                        st.session_state["ruler_south_w"] = _label_vals.get("南面幅", 0.0)
-                                        st.session_state["ruler_north_w"] = _label_vals.get("北面幅", 0.0)
-                                        st.session_state["ruler_east_w"]  = _label_vals.get("東面幅", 0.0)
-                                        st.session_state["ruler_west_w"]  = _label_vals.get("西面幅", 0.0)
+                                    if _reflect and st.button("📐 下の計算フォームに反映", type="primary",
+                                                              use_container_width=True, key=f"{ns}_reflect"):
+                                        for _lab, _key in _reflect.items():
+                                            if _lab in _label_vals:
+                                                st.session_state[_key] = _label_vals[_lab]
                                         st.success("✅ 幾何学計算フォームに反映しました")
                                         # 下の計算フォームへ反映するためページ全体を再実行
                                         st.rerun()
@@ -913,10 +943,10 @@ elif st.session_state.step == 2:
                             st.info("最初に「縮尺基準線」を計測してください（既知の寸法線の上）")
 
                     # リセットボタン
-                    if st.button("🗑️ 計測をリセット", use_container_width=True):
-                        st.session_state.ruler_pts = []
-                        st.session_state.ruler_pending = None
-                        st.session_state.ruler_last_coord = None
+                    if st.button("🗑️ 計測をリセット", use_container_width=True, key=f"{ns}_reset"):
+                        st.session_state[_k_pts] = []
+                        st.session_state[_k_pending] = None
+                        st.session_state[_k_last] = None
                         st.rerun(scope="fragment")
 
                 except ImportError:
@@ -924,8 +954,69 @@ elif st.session_state.step == 2:
                 except Exception as _e:
                     st.error(f"クリック計測エラー: {_e}")
 
+            # ── 全体図のクリック計測パネル ──
             with st.expander("📏 図面クリック計測（2点クリックで正確な寸法を読む）", expanded=False):
-                _render_click_ruler(drawing_img_bytes)
+                if st.button("🔍 図面を拡大表示", key="zoom_full", use_container_width=True):
+                    _zoom_dialog(drawing_img_bytes, "図面全体（AI読み取りマーカー付き）")
+                _render_click_ruler(drawing_img_bytes, ns="ruler")
+
+            # ── ③ 4面分割表示（南・北・東・西を個別に計測） ──
+            with st.expander("🪟 4面分割表示（南・北・東・西を個別に計測）", expanded=False):
+                st.caption(
+                    "PDF1ページに並んだ南・北・東・西の立面図をAIが判定し、"
+                    "各面を切り出して個別パネルで計測・拡大できます。"
+                )
+                _fc1, _fc2 = st.columns(2)
+                with _fc1:
+                    if st.button("🤖 AIで4面を自動検出", type="primary",
+                                 use_container_width=True, key="detect_faces"):
+                        try:
+                            from modules.llm_client import LLMClient
+                            from core.drawing_analyzer import DrawingAnalyzer
+                            _llm = LLMClient()
+                            _da = DrawingAnalyzer(_llm.api_key)
+                            with st.spinner("各面の領域をAIが解析中..."):
+                                st.session_state.drawing_faces = _da.detect_faces(drawing_raw_bytes)
+                            st.rerun()
+                        except Exception as _fe:
+                            st.error(f"4面検出エラー: {_fe}")
+                with _fc2:
+                    if st.session_state.get("drawing_faces") and st.button(
+                        "🗑️ 検出結果をクリア", use_container_width=True, key="clear_faces"
+                    ):
+                        st.session_state.pop("drawing_faces", None)
+                        st.rerun()
+
+                _faces = st.session_state.get("drawing_faces") or []
+                if _faces:
+                    _face_codes = {"南面": "south", "北面": "north", "東面": "east", "西面": "west"}
+                    _by_face = {f.get("face"): f for f in _faces}
+                    _tabs = st.tabs(list(_face_codes.keys()))
+                    for _ti, (_fname, _fcode) in enumerate(_face_codes.items()):
+                        with _tabs[_ti]:
+                            _box = _by_face.get(_fname)
+                            if (not _box or not _box.get("found", True)
+                                    or "x1_pct" not in _box or "x2_pct" not in _box):
+                                st.warning(
+                                    f"{_fname}の立面図を自動検出できませんでした。"
+                                    "上の「📏 図面クリック計測」で全体図から計測してください。"
+                                )
+                                continue
+                            _crop_bytes = _crop_pct(drawing_raw_bytes, _box, _pad=2.0)
+                            st.image(_crop_bytes, caption=f"{_fname} 立面図（AI切り出し）",
+                                     use_container_width=True)
+                            if st.button("🔍 この面を拡大表示", use_container_width=True,
+                                         key=f"zoom_{_fcode}"):
+                                _zoom_dialog(_crop_bytes, f"{_fname} 立面図")
+                            st.divider()
+                            _render_click_ruler(
+                                _crop_bytes,
+                                ns=f"face_{_fcode}",
+                                labels=["縮尺基準線", f"{_fname}幅"],
+                                reflect_map={f"{_fname}幅": f"ruler_{_fcode}_w"},
+                            )
+                else:
+                    st.info("「🤖 AIで4面を自動検出」を押すと、各面が個別パネルで表示されます。")
 
                 # ── 幾何学計算ビュー（4面個別入力） ───────────────────────
         drawing_data_geo = st.session_state.get("drawing_data", {})

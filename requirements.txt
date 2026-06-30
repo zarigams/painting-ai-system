@@ -2,7 +2,9 @@
 # Phase1 依存パッケージ
 
 # Web UI
-streamlit>=1.35.0
+# 1.37.0 で st.fragment / st.rerun(scope="fragment") / st.dialog が安定版になった。
+# クリック計測の部分再実行（fragment）と拡大ダイアログ（dialog）に必須のため 1.37 を下限とする。
+streamlit>=1.37.0
 
 # OpenAI API（LLM・画像解析・音声認識）
 openai>=1.30.0
