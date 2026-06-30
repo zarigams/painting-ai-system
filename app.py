@@ -761,14 +761,19 @@ elif st.session_state.step == 2:
         # ── 図面クリック計測 ───────────────────────────────────
         drawing_img_bytes = st.session_state.get("drawing_annotated_img")
         if drawing_img_bytes:
-            with st.expander("📏 図面クリック計測（2点クリックで正確な寸法を読む）", expanded=False):
+
+            # クリックのたびに全ページが再実行されないよう、計測UIを fragment 化する。
+            # fragment 内の st.rerun(scope="fragment") はこのブロックだけを再描画するため、
+            # 1点クリックごとのページ全体リロードが無くなり、操作が軽快になる。
+            @st.fragment
+            def _render_click_ruler(_img_bytes):
                 try:
                     from streamlit_image_coordinates import streamlit_image_coordinates
                     from PIL import Image, ImageDraw
                     from core.pixel_ruler import line_px_length, LABELS, COLORS
                     import io as _io, math as _math
 
-                    _pil_orig = Image.open(_io.BytesIO(drawing_img_bytes))
+                    _pil_orig = Image.open(_io.BytesIO(_img_bytes))
                     _orig_w, _orig_h = _pil_orig.size
                     _disp_w = 900
                     _scale_r = _orig_w / _disp_w
@@ -782,6 +787,14 @@ elif st.session_state.step == 2:
                         st.session_state.ruler_pending = None  # {label, x1, y1}
                     if "ruler_last_coord" not in st.session_state:
                         st.session_state.ruler_last_coord = None
+
+                    # ── 使い方ガイド（図の上に3ステップ表示） ──
+                    st.markdown(
+                        "##### 📖 使い方（3ステップ）\n"
+                        "1. **縮尺線を2点クリック** … 図面で寸法が分かっている線（例: 9.10m）の両端をクリック\n"
+                        "2. **実寸を入力** … 下に出る「縮尺基準線の実長（m）」へ図面の数値を入力\n"
+                        "3. **各面の幅を測定** … ラベルを選ぶ（自由入力も可）→ 測りたい線を2点クリック"
+                    )
 
                     # クリック済みの線をプレビュー表示
                     _preview = _pil_disp.copy()
@@ -799,21 +812,38 @@ elif st.session_state.step == 2:
                         _py = st.session_state.ruler_pending["y1"]
                         _draw.ellipse([_px-6,_py-6,_px+6,_py+6], fill=(255,80,0), outline=(255,255,255), width=2)
 
-                    # 手順表示
+                    # 手順表示 ＋ ラベル選択（定型 or 自由入力）
                     _pending = st.session_state.ruler_pending
                     if _pending is None:
-                        _cur_label = st.selectbox(
-                            "次に計測する項目",
-                            LABELS,
-                            key="ruler_cur_label",
-                        )
+                        _col_a, _col_b = st.columns(2)
+                        with _col_a:
+                            _cur_label_sel = st.selectbox(
+                                "計測する項目（定型）",
+                                LABELS,
+                                key="ruler_cur_label",
+                            )
+                        with _col_b:
+                            _cur_label_free = st.text_input(
+                                "ラベル自由入力（入力時はこちらを優先）",
+                                key="ruler_free_label",
+                                placeholder="例: 玄関ポーチ幅",
+                            )
+                        _cur_label = _cur_label_free.strip() or _cur_label_sel
                         st.info(f"📍 **{_cur_label}** の **開始点** をクリックしてください")
                     else:
                         _cur_label = _pending["label"]
                         st.success(f"📍 **{_cur_label}** の **終了点** をクリックしてください（開始点: {_pending['x1']}, {_pending['y1']}）")
 
                     # 画像クリック受付
-                    _coord = streamlit_image_coordinates(_preview, key="ruler_img", width=_disp_w)
+                    # streamlit-image-coordinates はクリック位置にライブラリ自身が
+                    # 赤いマーカーを描画し、それが次のクリックまでブラウザ側に残る。
+                    # 計測状態（確定済み本数・待機中フラグ）が変わるたびに key を変えて
+                    # コンポーネントを再マウントし、前回の赤い始点マーカーを消す。
+                    _ruler_key = (
+                        f"ruler_img_{len(st.session_state.ruler_pts)}"
+                        f"_{'p' if st.session_state.ruler_pending else 'n'}"
+                    )
+                    _coord = streamlit_image_coordinates(_preview, key=_ruler_key, width=_disp_w)
 
                     # クリック処理（新しいクリックのみ）
                     if _coord and _coord != st.session_state.ruler_last_coord:
@@ -836,7 +866,8 @@ elif st.session_state.step == 2:
                                 "px_orig": round(px_len * _scale_r, 1),
                             })
                             st.session_state.ruler_pending = None
-                        st.rerun()
+                        # fragment だけ再描画（ページ全体リロードを避ける）
+                        st.rerun(scope="fragment")
 
                     # 計測結果テーブル
                     if st.session_state.ruler_pts:
@@ -876,6 +907,7 @@ elif st.session_state.step == 2:
                                         st.session_state["ruler_east_w"]  = _label_vals.get("東面幅", 0.0)
                                         st.session_state["ruler_west_w"]  = _label_vals.get("西面幅", 0.0)
                                         st.success("✅ 幾何学計算フォームに反映しました")
+                                        # 下の計算フォームへ反映するためページ全体を再実行
                                         st.rerun()
                         else:
                             st.info("最初に「縮尺基準線」を計測してください（既知の寸法線の上）")
@@ -885,12 +917,15 @@ elif st.session_state.step == 2:
                         st.session_state.ruler_pts = []
                         st.session_state.ruler_pending = None
                         st.session_state.ruler_last_coord = None
-                        st.rerun()
+                        st.rerun(scope="fragment")
 
                 except ImportError:
                     st.warning("⚠️ streamlit-image-coordinates が未インストールです")
                 except Exception as _e:
                     st.error(f"クリック計測エラー: {_e}")
+
+            with st.expander("📏 図面クリック計測（2点クリックで正確な寸法を読む）", expanded=False):
+                _render_click_ruler(drawing_img_bytes)
 
                 # ── 幾何学計算ビュー（4面個別入力） ───────────────────────
         drawing_data_geo = st.session_state.get("drawing_data", {})
