@@ -20,6 +20,7 @@ def calc_geometry_4face(
     west_opening_m2: float = 0.0,
     opening_deduction_rate: float = 0.15,
     angle_rad_override: float = None,  # 直接指定する場合（勾配直接入力時）
+    eave_overhang_m: float = 0.0,      # 軒の出（片側, m）。屋根フットプリントに加算
 ) -> dict:
     """
     各面の幅を個別に受け取り、外壁・屋根面積を幾何学的に算出する。
@@ -71,9 +72,10 @@ def calc_geometry_4face(
     wall_net   = round(sn + nn + en + wn, 2)
     opening_total = round(south_opening_m2 + north_opening_m2 + east_opening_m2 + west_opening_m2, 2)
 
-    # --- 屋根（平均幅で寄棟フットプリントを近似） ---
-    avg_ns    = (south_width_m + n_w) / 2.0
-    avg_ew    = (east_width_m  + w_w) / 2.0
+    # --- 屋根（平均幅で寄棟フットプリントを近似、軒の出を加算） ---
+    overhang2 = eave_overhang_m * 2.0   # 両側分
+    avg_ns    = (south_width_m + n_w) / 2.0 + overhang2
+    avg_ew    = (east_width_m  + w_w) / 2.0 + overhang2
     footprint = round(avg_ns * avg_ew, 2)
     roof_area = round(footprint / math.cos(angle_rad), 2) if angle_rad < math.pi / 2 else 0.0
 
@@ -105,6 +107,7 @@ def calc_geometry_4face(
         # 屋根
         "avg_ns_m":               round(avg_ns, 3),
         "avg_ew_m":               round(avg_ew, 3),
+        "eave_overhang_m":        eave_overhang_m,
         "footprint_m2":           footprint,
         "roof_area_m2":           roof_area,
         # 後方互換

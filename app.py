@@ -758,6 +758,125 @@ elif st.session_state.step == 2:
                     else:
                         st.info("アノテーション情報なし")
 
+        # ── 図面クリック計測 ───────────────────────────────────
+        drawing_img_bytes = st.session_state.get("drawing_annotated_img")
+        if drawing_img_bytes:
+            with st.expander("📏 図面クリック計測（線を引いて正確な寸法を読む）", expanded=False):
+                try:
+                    from streamlit_drawable_canvas import st_canvas
+                    from PIL import Image
+                    from core.pixel_ruler import line_px_length, scale_factor, px_to_m, LABELS, COLORS, STROKE_ORDER_HINT
+                    import io as _io
+
+                    # 画像をPILで読み込み、表示サイズを決定
+                    _pil = Image.open(_io.BytesIO(drawing_img_bytes))
+                    _orig_w, _orig_h = _pil.size
+                    _canvas_w = 900
+                    _canvas_h = int(_orig_h * _canvas_w / _orig_w)
+                    _disp_img = _pil.resize((_canvas_w, _canvas_h), Image.LANCZOS)
+
+                    st.markdown("""
+**使い方（3ステップ）**
+1. 🟣 まず図面の **既知の寸法線** の上に線を引く（縮尺基準線）
+2. 🟢🔵🟠🔴 各面の端から端まで線を引く
+3. 下の表に実長を入力 → **「計算に使う」** を押す
+""")
+                    st.caption(f"元画像: {_orig_w}×{_orig_h}px → 表示: {_canvas_w}×{_canvas_h}px")
+
+                    # キャンバス描画
+                    _stroke_label = st.selectbox(
+                        "次に引く線の種類",
+                        LABELS,
+                        key="ruler_stroke_label",
+                        help="線を引く前にここで種類を選ぶと色が変わります（参考表示）"
+                    )
+                    _stroke_color = COLORS.get(_stroke_label, "#FF0000")
+
+                    canvas_result = st_canvas(
+                        fill_color="rgba(0,0,0,0)",
+                        stroke_width=3,
+                        stroke_color=_stroke_color,
+                        background_image=_disp_img,
+                        update_streamlit=True,
+                        drawing_mode="line",
+                        height=_canvas_h,
+                        width=_canvas_w,
+                        key="measure_canvas",
+                    )
+
+                    # 凡例
+                    leg_cols = st.columns(len(LABELS))
+                    for _i, (_lbl, _col) in enumerate(zip(LABELS, leg_cols)):
+                        _col.markdown(
+                            f'<span style="background:{COLORS[_lbl]};color:white;'
+                            f'padding:2px 8px;border-radius:4px;font-size:0.75rem;">'
+                            f'{_i+1}. {_lbl}</span>',
+                            unsafe_allow_html=True
+                        )
+
+                    # 描いた線を処理
+                    _objects = []
+                    if canvas_result.json_data:
+                        _objects = canvas_result.json_data.get("objects", [])
+
+                    if _objects:
+                        st.markdown(f"**引いた線: {len(_objects)} 本**")
+                        # 表示スケール比（元画像→表示キャンバス）
+                        _scale_ratio = _orig_w / _canvas_w
+
+                        _tbl_rows = []
+                        for _idx, _obj in enumerate(_objects):
+                            _px_disp  = line_px_length(_obj)
+                            _px_orig  = _px_disp * _scale_ratio
+                            _tbl_rows.append({
+                                "線番号": f"Line {_idx+1}",
+                                "ラベル（割り当て）": LABELS[_idx] if _idx < len(LABELS) else f"Line {_idx+1}",
+                                "ピクセル長": round(_px_disp, 1),
+                            })
+
+                        import pandas as pd
+                        st.dataframe(pd.DataFrame(_tbl_rows), hide_index=True, use_container_width=True)
+
+                        # Line 1 が縮尺基準線 → 実長入力
+                        st.markdown("##### ① 縮尺を合わせる（Line 1 の実長を入力）")
+                        _ref_real = st.number_input(
+                            "Line 1 の実長（m）",
+                            min_value=0.1, max_value=100.0, value=9.1, step=0.1, format="%.2f",
+                            help="図面の寸法数字を読んでここに入力する"
+                        )
+
+                        _ref_obj = _objects[0]
+                        _mpp = scale_factor(_ref_obj, _ref_real)
+
+                        if _mpp > 0 and len(_objects) >= 2:
+                            st.markdown("##### ② 各線の実寸（自動計算）")
+                            _result_rows = []
+                            _label_map = {}
+                            for _idx, _obj in enumerate(_objects[1:], start=2):
+                                _lbl = LABELS[_idx - 1] if _idx - 1 < len(LABELS) else f"Line {_idx}"
+                                _real_m = px_to_m(_obj, _mpp)
+                                _result_rows.append({"線": f"Line {_idx}", "割当": _lbl, "実寸（m）": _real_m})
+                                _label_map[_lbl] = _real_m
+
+                            st.dataframe(pd.DataFrame(_result_rows), hide_index=True, use_container_width=True)
+
+                            if st.button("📐 これらの幅を計算フォームに反映する", type="primary", use_container_width=True):
+                                st.session_state["ruler_south_w"] = _label_map.get("南面幅", 0.0)
+                                st.session_state["ruler_north_w"] = _label_map.get("北面幅", 0.0)
+                                st.session_state["ruler_east_w"]  = _label_map.get("東面幅", 0.0)
+                                st.session_state["ruler_west_w"]  = _label_map.get("西面幅", 0.0)
+                                st.success("✅ 下の幾何学計算フォームに反映しました。確認して「この計算値を見積もりに使う」を押してください。")
+                                st.rerun()
+                        elif len(_objects) == 1:
+                            st.info("Line 1（縮尺基準線）が引けました。次に各面の幅を引いてください。")
+                    else:
+                        st.info("図面の上に線を引いてください。まず既知の寸法線（縮尺基準線）から始めてください。")
+
+                except ImportError:
+                    st.warning("⚠️ streamlit-drawable-canvas が未インストールです。`pip install streamlit-drawable-canvas` を実行してください。")
+                except Exception as _e:
+                    st.error(f"クリック計測エラー: {_e}")
+
         # ── 幾何学計算ビュー（4面個別入力） ───────────────────────
         drawing_data_geo = st.session_state.get("drawing_data", {})
         ann_items_geo    = st.session_state.get("drawing_annotations", [])
@@ -800,16 +919,24 @@ elif st.session_state.step == 2:
 
             st.markdown("##### 📏 各面の幅（図面から計測）")
             st.caption("南面・東面は必須。北面・西面が南面・東面と異なる場合のみ入力（L字・凹凸のある建物）")
+            # クリック計測で反映された値があれば優先使用
+            _r_s = st.session_state.get("ruler_south_w", 0.0)
+            _r_n = st.session_state.get("ruler_north_w", 0.0)
+            _r_e = st.session_state.get("ruler_east_w",  0.0)
+            _r_w = st.session_state.get("ruler_west_w",  0.0)
+
             wc1, wc2, wc3, wc4 = st.columns(4)
             s_w = wc1.number_input("南面幅（m）", min_value=0.0, max_value=50.0,
-                value=float(south_w) if south_w else 0.0, step=0.1, format="%.2f")
+                value=_r_s if _r_s > 0 else (float(south_w) if south_w else 0.0),
+                step=0.1, format="%.2f")
             n_w = wc2.number_input("北面幅（m）", min_value=0.0, max_value=50.0,
-                value=0.0, step=0.1, format="%.2f",
+                value=_r_n, step=0.1, format="%.2f",
                 help="南面と同じ場合は 0 のまま")
             e_w = wc3.number_input("東面幅（m）", min_value=0.0, max_value=50.0,
-                value=float(east_w) if east_w else 0.0, step=0.1, format="%.2f")
+                value=_r_e if _r_e > 0 else (float(east_w) if east_w else 0.0),
+                step=0.1, format="%.2f")
             w_w = wc4.number_input("西面幅（m）", min_value=0.0, max_value=50.0,
-                value=0.0, step=0.1, format="%.2f",
+                value=_r_w, step=0.1, format="%.2f",
                 help="東面と同じ場合は 0 のまま")
 
             st.markdown("##### 📐 屋根勾配")
@@ -846,6 +973,16 @@ elif st.session_state.step == 2:
                 eo_m2 = oc3.number_input("東面開口（㎡）", min_value=0.0, max_value=100.0, step=0.5, format="%.1f")
                 wo_m2 = oc4.number_input("西面開口（㎡）", min_value=0.0, max_value=100.0, step=0.5, format="%.1f")
 
+            st.markdown("##### 🏠 軒の出（のきので）")
+            eave_overhang = st.number_input(
+                "軒の出（m）",
+                min_value=0.0, max_value=2.0, value=0.0, step=0.05, format="%.2f",
+                help="屋根が外壁より外へ出ている長さ（片側）。標準は0.5〜0.9m。"
+                     "外壁幅に 2×軒の出 を加えてフットプリントを計算します。"
+            )
+            if eave_overhang > 0:
+                st.caption(f"フットプリントへの加算: 各辺に +{eave_overhang*2:.2f}m")
+
             if s_w > 0 and e_w > 0:
                 from core.drawing_calc import calc_geometry_4face
                 import pandas as pd
@@ -857,6 +994,7 @@ elif st.session_state.step == 2:
                     east_opening_m2=eo_m2,  west_opening_m2=wo_m2,
                     opening_deduction_rate=ded_rate,
                     angle_rad_override=angle_rad_input if use_direct_slope else None,
+                    eave_overhang_m=eave_overhang,
                 )
                 st.session_state["geo_result"] = geo
 
