@@ -70,47 +70,49 @@ confidenceは high/medium/low で記入。
 # ─────────────────────────────────────────────────────────────────────────────
 DRAWING_SYSTEM_PROMPT_ANNOTATED = """
 あなたは建築図面の読み取り専門AIです。
-塗装工事の見積もりに必要な情報を図面から抽出し、各寸法の画像上の位置情報も返してください。
+立面図（南・東・西・北）から塗装工事に必要な寸法を読み取り、位置情報付きで返してください。
 
-## 読み取り方法
+## 最重要：読み取る寸法の優先順位
+1. 各立面の【幅寸法】（南面幅・東面幅・北面幅・西面幅）← 必ず探す
+2. 高さ寸法（棟高さ・軒高・1F天井高）
+3. 縮尺
+4. その他の寸法
 
-### パターンA：寸法数字が図面に明記されている場合
-各面（南・北・東・西）の幅×高さの寸法数字を読み取り、面積を計算して合算してください。
-
-### パターンB：実効縮尺が指定されている場合
-ユーザーメッセージに「【実効縮尺】1/XXX」が記載されている場合:
-1. 立面図（南立面図・北立面図・東立面図・西立面図）を特定する
-2. 各立面図の壁の幅と高さを、図面全体に対する比率で視覚的に推定する
-3. 指定された実効縮尺を使って実寸（m）に変換する
-4. 各面の面積（幅×高さ）を計算して合算する
-※窓・ドアなどの開口部は差し引かず、全面を外壁面積として計上してよい
-
-## annotations について
-読み取った各寸法数値・情報を annotations として返してください。
-各アノテーションには以下を含めます：
-- label: 項目名（例: "棟高さ", "南面幅", "軒高（2F）", "縮尺"）
-- value: 読み取った数値・値（文字列）
-- unit: 単位（"m", "㎡", "1/100" など）
-- x_pct: 図面画像の左端を0、右端を100としたときのX座標（%整数）
-  ※ アノテーション数値が書かれている箇所のX座標
-- y_pct: 図面画像の上端を0、下端を100としたときのY座標（%整数）
-  ※ アノテーション数値が書かれている箇所のY座標
+## annotations フォーマット
+各寸法について以下を返す：
+- label: 項目名（"南面幅", "東面幅", "棟高さ", "軒高（2F）", "1F天井高", "縮尺" など）
+- value: 数値（文字列）
+- unit: 単位（"m", "1/100" など）
+- category: "width" / "height" / "scale" / "area" / "other"
 - confidence: "high" / "medium" / "low"
-- category: "height"（高さ寸法） / "width"（幅寸法） / "roof"（屋根） / "scale"（縮尺・情報） / "area"（面積） / "other"
+- x_pct, y_pct: 寸法が書かれている箇所の中心座標（画像の0〜100%）
+
+【幅寸法の場合は追加で】
+- x1_pct: 計測区間の左端X座標（%）
+- x2_pct: 計測区間の右端X座標（%）
+（これにより図面上に←→矢印を描ける）
+
+## 注意事項
+- スキャン図面で数字が読みにくい場合は confidence: "low" にして値を推定で記入すること
+- 幅寸法が図面に明記されていない場合は、立面図の外形を視覚的に測定して推定値を返すこと
+- 縮尺が1/100なら、図面上で1mmが実寸10cmに相当する
+- 全ての立面図（南・東・西・北）を確認し、それぞれの幅を返すこと
 
 ## 出力形式（JSONのみ。説明文不要）
 {
   "building_type": "戸建て住宅",
   "structure": "木造",
   "floors": 2,
-  "exterior_wall_area": 120.5,
-  "roof_area": 65.0,
+  "exterior_wall_area": null,
+  "roof_area": null,
   "total_floor_area": null,
   "building_area": null,
   "notes": "寄棟屋根、南面バルコニーあり",
-  "estimated_fields": ["exterior_wall_area"],
+  "estimated_fields": [],
   "confidence": "medium",
   "annotations": [
+    {"label": "南面幅", "value": "9.10", "unit": "m", "x_pct": 25, "y_pct": 82, "x1_pct": 8, "x2_pct": 43, "confidence": "medium", "category": "width"},
+    {"label": "東面幅", "value": "7.20", "unit": "m", "x_pct": 73, "y_pct": 82, "x1_pct": 55, "x2_pct": 92, "confidence": "medium", "category": "width"},
     {"label": "棟高さ", "value": "8.693", "unit": "m", "x_pct": 30, "y_pct": 4, "confidence": "high", "category": "height"},
     {"label": "軒高（2F）", "value": "6.500", "unit": "m", "x_pct": 30, "y_pct": 17, "confidence": "high", "category": "height"},
     {"label": "1F天井高", "value": "3.665", "unit": "m", "x_pct": 30, "y_pct": 38, "confidence": "high", "category": "height"},
@@ -118,10 +120,7 @@ DRAWING_SYSTEM_PROMPT_ANNOTATED = """
   ]
 }
 
-読み取れない・計算できない項目はnullとする。
-推定した項目名はestimated_fieldsリストに入れる。
-confidenceは high/medium/low で記入。
-annotationsは読み取れた全寸法について記入（最大20件）。
+exterior_wall_area と roof_area は null のまま返してください（別モジュールで幾何学計算します）。
 """
 
 # カテゴリ別の色（RGB）
@@ -336,7 +335,7 @@ class DrawingAnalyzer:
         return result, annotated_bytes, annotations
 
     def _draw_annotations(self, img_bytes: bytes, annotations: list) -> bytes:
-        """PILで画像に寸法アノテーションを書き込んで返す"""
+        """PILで画像に寸法アノテーション（丸マーカー＋幅矢印）を書き込んで返す"""
         from PIL import Image, ImageDraw, ImageFont
         import io
 
@@ -345,59 +344,92 @@ class DrawingAnalyzer:
         draw = ImageDraw.Draw(overlay)
 
         W, H = img.size
-        radius = max(16, max(W, H) // 70)
-        font_size = max(18, radius)
+        radius   = max(14, max(W, H) // 80)
+        font_size = max(16, radius)
 
         try:
             font = ImageFont.load_default(size=font_size)
+            font_sm = ImageFont.load_default(size=max(14, font_size - 4))
         except TypeError:
-            font = ImageFont.load_default()
+            font = font_sm = ImageFont.load_default()
 
-        for ann in annotations:
-            x = int(ann.get("x_pct", 50) / 100 * W)
-            y = int(ann.get("y_pct", 50) / 100 * H)
-            cat = ann.get("category", "other")
-            r, g, b = ANNOTATION_COLORS.get(cat, ANNOTATION_COLORS["other"])
-
-            # 丸マーカー（白縁あり）
-            border = max(2, radius // 6)
-            draw.ellipse(
-                [x - radius, y - radius, x + radius, y + radius],
-                fill=(r, g, b, 220),
-                outline=(255, 255, 255, 255),
-                width=border,
-            )
-
-            # ラベルテキスト
-            val = ann.get("value", "")
-            unit = ann.get("unit", "")
-            label = ann.get("label", "")
-            text = f"{label}  {val}{' ' + unit if unit else ''}"
-
+        def draw_label(draw, text, cx, cy, r, g, b, font):
             try:
                 bbox = draw.textbbox((0, 0), text, font=font)
                 tw = bbox[2] - bbox[0]
                 th = bbox[3] - bbox[1]
             except AttributeError:
                 tw, th = len(text) * font_size // 2, font_size
-
-            tx = x + radius + 8
-            ty = y - th // 2
-
-            # 右端はみ出し防止
-            if tx + tw + 10 > W:
-                tx = x - radius - tw - 12
-
-            # ラベル背景（角丸ピル）
-            pad = 5
+            tx = cx - tw // 2
+            ty = cy - th // 2
+            pad = 4
             draw.rounded_rectangle(
                 [tx - pad, ty - pad, tx + tw + pad, ty + th + pad],
-                radius=5,
-                fill=(r, g, b, 210),
+                radius=4, fill=(r, g, b, 210)
             )
             draw.text((tx, ty), text, fill=(255, 255, 255, 255), font=font)
 
-        # 合成
+        for ann in annotations:
+            cat = ann.get("category", "other")
+            r, g, b = ANNOTATION_COLORS.get(cat, ANNOTATION_COLORS["other"])
+            val  = ann.get("value", "")
+            unit = ann.get("unit", "")
+            label = ann.get("label", "")
+            text  = f"{label}  {val}{(' ' + unit) if unit else ''}"
+
+            # ── 幅寸法：両端矢印で描画 ────────────────────────
+            if cat == "width" and "x1_pct" in ann and "x2_pct" in ann:
+                x1 = int(ann["x1_pct"] / 100 * W)
+                x2 = int(ann["x2_pct"] / 100 * W)
+                y  = int(ann.get("y_pct", 90) / 100 * H)
+                lw = max(3, radius // 5)
+
+                # 水平線
+                draw.line([(x1, y), (x2, y)], fill=(r, g, b, 220), width=lw)
+                # 左矢頭
+                aw = max(10, lw * 4)
+                draw.polygon([(x1, y), (x1 + aw, y - aw // 2), (x1 + aw, y + aw // 2)],
+                              fill=(r, g, b, 220))
+                # 右矢頭
+                draw.polygon([(x2, y), (x2 - aw, y - aw // 2), (x2 - aw, y + aw // 2)],
+                              fill=(r, g, b, 220))
+                # 上下の端線
+                tl = max(8, lw * 3)
+                draw.line([(x1, y - tl), (x1, y + tl)], fill=(r, g, b, 220), width=lw)
+                draw.line([(x2, y - tl), (x2, y + tl)], fill=(r, g, b, 220), width=lw)
+                # ラベル（中央上）
+                mx = (x1 + x2) // 2
+                draw_label(draw, text, mx, y - font_size - 8, r, g, b, font)
+
+            # ── その他：丸マーカー ────────────────────────────
+            else:
+                x = int(ann.get("x_pct", 50) / 100 * W)
+                y = int(ann.get("y_pct", 50) / 100 * H)
+                border = max(2, radius // 6)
+                draw.ellipse(
+                    [x - radius, y - radius, x + radius, y + radius],
+                    fill=(r, g, b, 220),
+                    outline=(255, 255, 255, 255),
+                    width=border,
+                )
+                # ラベル（右横）
+                try:
+                    bbox = draw.textbbox((0, 0), text, font=font_sm)
+                    tw = bbox[2] - bbox[0]
+                    th = bbox[3] - bbox[1]
+                except AttributeError:
+                    tw, th = len(text) * (font_size - 4) // 2, font_size - 4
+                tx = x + radius + 8
+                ty = y - th // 2
+                if tx + tw + 10 > W:
+                    tx = x - radius - tw - 12
+                pad = 4
+                draw.rounded_rectangle(
+                    [tx - pad, ty - pad, tx + tw + pad, ty + th + pad],
+                    radius=4, fill=(r, g, b, 210)
+                )
+                draw.text((tx, ty), text, fill=(255, 255, 255, 255), font=font_sm)
+
         result = Image.alpha_composite(img, overlay).convert("RGB")
         out = io.BytesIO()
         result.save(out, format="PNG")

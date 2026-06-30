@@ -758,6 +758,96 @@ elif st.session_state.step == 2:
                     else:
                         st.info("アノテーション情報なし")
 
+        # ── 幾何学計算ビュー ─────────────────────────────────
+        drawing_data_geo = st.session_state.get("drawing_data", {})
+        ann_items_geo    = st.session_state.get("drawing_annotations", [])
+
+        # アノテーションから高さ・幅の確定値を抽出
+        def _ann_val(label_kw, items):
+            for a in items:
+                if label_kw in a.get("label", "") and a.get("confidence") in ("high", "medium"):
+                    try:
+                        return float(a["value"])
+                    except Exception:
+                        pass
+            return None
+
+        ridge_h = _ann_val("棟高", ann_items_geo) or drawing_data_geo.get("ridge_height")
+        eave_h  = _ann_val("軒高", ann_items_geo) or drawing_data_geo.get("eave_height")
+        south_w = _ann_val("南面幅", ann_items_geo)
+        east_w  = _ann_val("東面幅", ann_items_geo)
+
+        # fallback: drawing_data に高さが入っている場合
+        if ridge_h is None:
+            ridge_h = 8.693  # デフォルト（読み取り済みの場合のみ）
+        if eave_h is None:
+            eave_h  = 6.500
+
+        with st.expander("📐 幾何学計算（正確な面積算出）", expanded=(south_w is None)):
+            st.caption(f"棟高さ: {ridge_h} m　軒高: {eave_h} m　→　屋根立ち上がり: {round(ridge_h - eave_h, 3)} m（確定）")
+
+            gc1, gc2 = st.columns(2)
+            south_w_input = gc1.number_input(
+                "南面の幅（m）※図面から計測",
+                min_value=0.0, max_value=50.0,
+                value=float(south_w) if south_w else 0.0,
+                step=0.1, format="%.2f",
+                help="南面（正面）の建物幅を図面から読んで入力してください。1つ入れるだけで全面積が計算できます。"
+            )
+            east_w_input = gc2.number_input(
+                "東面の幅（m）※図面から計測",
+                min_value=0.0, max_value=50.0,
+                value=float(east_w) if east_w else 0.0,
+                step=0.1, format="%.2f",
+                help="東面（側面）の建物幅（奥行き方向）を入力してください。"
+            )
+
+            if south_w_input > 0 and east_w_input > 0:
+                from core.drawing_calc import calc_geometry
+                geo = calc_geometry(
+                    south_width_m=south_w_input,
+                    east_width_m=east_w_input,
+                    ridge_height_m=ridge_h,
+                    eave_height_m=eave_h,
+                )
+                st.session_state["geo_result"] = geo
+
+                # 計算根拠テーブル
+                import pandas as pd
+                calc_rows = [
+                    {"項目": "屋根勾配",         "計算式": f"arctan({geo['rise_m']} ÷ {geo['run_m']})",          "結果": f"{geo['koun']}寸勾配  ({geo['angle_deg']}°)"},
+                    {"項目": "垂木長（実長）",     "計算式": f"√({geo['run_m']}² + {geo['rise_m']}²)",            "結果": f"{geo['rafter_length_m']} m"},
+                    {"項目": "外壁（南・北）",     "計算式": f"{south_w_input} m × {eave_h} m × 2面",             "結果": f"{geo['wall_south_m2'] + geo['wall_north_m2']:.2f} ㎡"},
+                    {"項目": "外壁（東・西）",     "計算式": f"{east_w_input} m × {eave_h} m × 2面",              "結果": f"{geo['wall_east_m2'] + geo['wall_west_m2']:.2f} ㎡"},
+                    {"項目": "外壁合計（総）",     "計算式": "南北 + 東西",                                        "結果": f"{geo['wall_gross_m2']} ㎡"},
+                    {"項目": "外壁（開口控除後）", "計算式": f"{geo['wall_gross_m2']} × {int(geo['opening_deduction_rate']*100)}%", "結果": f"**{geo['wall_net_m2']} ㎡**"},
+                    {"項目": "床面積（フットプリント）", "計算式": f"{south_w_input} × {east_w_input}",             "結果": f"{geo['footprint_m2']} ㎡"},
+                    {"項目": "屋根面積",           "計算式": f"{geo['footprint_m2']} ÷ cos({geo['angle_deg']}°)", "結果": f"**{geo['roof_area_m2']} ㎡**"},
+                ]
+                st.dataframe(pd.DataFrame(calc_rows), hide_index=True, use_container_width=True)
+
+                ra1, ra2 = st.columns(2)
+                ra1.metric("外壁面積（計算値）", f"{geo['wall_net_m2']} ㎡",
+                           delta=f"総面積 {geo['wall_gross_m2']}㎡ の85%")
+                ra2.metric("屋根面積（計算値）", f"{geo['roof_area_m2']} ㎡",
+                           delta=f"{geo['koun']}寸勾配 / {geo['angle_deg']}°")
+
+                if st.button("✅ この計算値を見積もりに使う", type="primary", use_container_width=True):
+                    from core.quantity_calculator import calculate_from_quantities
+                    q["wall_area"]  = geo["wall_net_m2"]
+                    q["roof_area"]  = geo["roof_area_m2"]
+                    st.session_state.quantities = q
+                    st.session_state.estimation = calculate_from_quantities(
+                        q,
+                        client_name=st.session_state.get("project", {}).get("client_name", ""),
+                        site_address=st.session_state.get("project", {}).get("site_address", ""),
+                        sales_rep=st.session_state.get("project", {}).get("sales_rep", ""),
+                    )
+                    st.success("✅ 計算値を反映しました")
+                    st.rerun()
+            else:
+                st.info("南面・東面の幅を入力すると、屋根勾配・外壁・屋根面積が自動計算されます。")
+
         # ── 合計表示 ────────────────────────────────────────
         st.metric("合計（税込）", f"¥{est.get('total', 0):,}")
 
