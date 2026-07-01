@@ -1006,7 +1006,7 @@ elif st.session_state.step == 2:
                     _sc4.metric("斜め",        f"{_stats['diagonal']}本")
 
                     # ラベル付き画像 / トレースビュー をタブで切り替え
-                    _view_tab1, _view_tab2 = st.tabs(["🖼 ラベル付き図面", "📐 ベクタートレース（角度＋寸法）"])
+                    _view_tab1, _view_tab2, _view_tab3 = st.tabs(["🖼 ラベル付き図面", "📐 ベクタートレース（角度＋寸法）", "🔮 3Dビュー（回転・クリック計測）"])
 
                     with _view_tab1:
                         st.caption("色：🟢8m以上 🟠3m以上 🔵1m以上 🟣1m未満")
@@ -1026,6 +1026,20 @@ elif st.session_state.step == 2:
                             min_length_m=_trace_min,
                         )
                         st.markdown(_svg, unsafe_allow_html=True)
+
+                    with _view_tab3:
+                        st.caption("🖱 ドラッグ: 回転  ホイール: ズーム  線をクリック: 線名と長さを表示")
+                        _3d_min = st.slider("最小表示長（m）", 0.3, 5.0, 0.5, step=0.1, key="3d_min_len")
+                        from core.line_detector import generate_3d_html
+                        _html3d = generate_3d_html(
+                            lines=_ld["lines"],
+                            scale_m_per_px=_ld["scale_m_per_px"],
+                            min_length_m=_3d_min,
+                            group_by_block=True,
+                            canvas_height=580,
+                        )
+                        import streamlit.components.v1 as _comp
+                        _comp.html(_html3d, height=600, scrolling=False)
 
                     # 線一覧テーブル
                     import pandas as pd

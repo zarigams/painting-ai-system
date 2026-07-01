@@ -409,3 +409,228 @@ def generate_trace_svg(
         f'</svg>'
     )
     return svg
+
+
+def generate_3d_html(
+    lines: list,
+    scale_m_per_px: float,
+    min_length_m: float = 0.5,
+    group_by_block: bool = True,
+    canvas_height: int = 600,
+) -> str:
+    """
+    Three.js を使った3Dインタラクティブビューを返す。
+    - マウスドラッグ: 回転
+    - スクロール: ズーム
+    - 線クリック: 線名・実寸をポップアップ表示
+
+    Returns
+    -------
+    st.components.v1.html() に渡すHTML文字列
+    """
+    import json as _json
+
+    draw = [l for l in lines if l["real_m"] >= min_length_m]
+
+    if group_by_block:
+        block_best: dict = {}
+        for ln in draw:
+            blk = str(ln.get("id", "?"))[0]
+            if blk not in block_best or ln["real_m"] > block_best[blk]["real_m"]:
+                block_best[blk] = ln
+        draw = list(block_best.values())
+
+    if not draw:
+        return "<p>表示できる線がありません</p>"
+
+    # 座標をメートル空間に変換（中心を原点に）
+    xs = [(l["x1"] + l["x2"]) / 2 for l in draw]
+    ys = [(l["y1"] + l["y2"]) / 2 for l in draw]
+    cx = sum(xs) / len(xs) if xs else 0
+    cy = sum(ys) / len(ys) if ys else 0
+
+    def _color(real_m: float) -> str:
+        if real_m >= 8.0: return "0x00cc44"
+        if real_m >= 3.0: return "0xff8800"
+        if real_m >= 1.0: return "0x2266ff"
+        return "0xaa44aa"
+
+    # JavaScriptに渡す線データ
+    js_lines = []
+    for ln in draw:
+        x1m = (ln["x1"] - cx) * scale_m_per_px
+        y1m = -(ln["y1"] - cy) * scale_m_per_px  # Y軸反転
+        x2m = (ln["x2"] - cx) * scale_m_per_px
+        y2m = -(ln["y2"] - cy) * scale_m_per_px
+        js_lines.append({
+            "x1": round(x1m, 3), "y1": round(y1m, 3),
+            "x2": round(x2m, 3), "y2": round(y2m, 3),
+            "id": str(ln.get("id", "")),
+            "real_m": ln["real_m"],
+            "orientation": ln["orientation"],
+            "color": _color(ln["real_m"]),
+        })
+
+    lines_json = _json.dumps(js_lines, ensure_ascii=False)
+    orient_map = {"horizontal": "水平", "vertical": "垂直", "diagonal": "斜め"}
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body {{ margin:0; background:#1a1a2e; overflow:hidden; font-family:sans-serif; }}
+  canvas {{ display:block; }}
+  #info {{
+    position:absolute; top:10px; left:50%; transform:translateX(-50%);
+    background:rgba(0,0,0,0.75); color:#fff; padding:8px 16px;
+    border-radius:20px; font-size:13px; pointer-events:none;
+    border:1px solid rgba(255,255,255,0.2);
+  }}
+  #popup {{
+    position:absolute; display:none;
+    background:rgba(20,20,40,0.95); color:#fff;
+    padding:12px 18px; border-radius:10px; font-size:14px;
+    border:1px solid #4af; pointer-events:none; min-width:180px;
+  }}
+  #popup .name  {{ font-size:22px; font-weight:bold; color:#4af; }}
+  #popup .meter {{ font-size:18px; color:#afa; margin:4px 0; }}
+  #popup .ori   {{ font-size:13px; color:#aaa; }}
+  #legend {{
+    position:absolute; bottom:14px; left:14px;
+    background:rgba(0,0,0,0.6); color:#fff;
+    padding:8px 14px; border-radius:8px; font-size:12px;
+  }}
+  #legend span {{ display:inline-block; width:12px; height:12px;
+    border-radius:2px; margin-right:5px; vertical-align:middle; }}
+</style>
+</head>
+<body>
+<div id="info">🖱 ドラッグ: 回転　ホイール: ズーム　線クリック: 詳細表示</div>
+<div id="popup"><div class="name" id="p-name"></div><div class="meter" id="p-m"></div><div class="ori" id="p-ori"></div></div>
+<div id="legend">
+  <span style="background:#00cc44"></span>8m以上 &nbsp;
+  <span style="background:#ff8800"></span>3m以上 &nbsp;
+  <span style="background:#2266ff"></span>1m以上 &nbsp;
+  <span style="background:#aa44aa"></span>1m未満
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const LINES = {lines_json};
+
+// Scene setup
+const W = window.innerWidth, H = {canvas_height};
+const renderer = new THREE.WebGLRenderer({{ antialias: true }});
+renderer.setSize(W, H);
+renderer.setPixelRatio(window.devicePixelRatio);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1a2e);
+
+const camera = new THREE.PerspectiveCamera(45, W / H, 0.01, 1000);
+camera.position.set(0, 0, 30);
+
+// Grid helper
+const grid = new THREE.GridHelper(40, 20, 0x333355, 0x222244);
+grid.rotation.x = 0;
+scene.add(grid);
+
+// Add lines
+const lineObjs = [];
+LINES.forEach(ln => {{
+  const mat = new THREE.LineBasicMaterial({{
+    color: parseInt(ln.color), linewidth: 3,
+  }});
+  const geo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(ln.x1, ln.y1, 0),
+    new THREE.Vector3(ln.x2, ln.y2, 0),
+  ]);
+  const line = new THREE.Line(geo, mat);
+  line.computeLineDistances();
+  line.userData = {{ id: ln.id, real_m: ln.real_m, orientation: ln.orientation }};
+  scene.add(line);
+  lineObjs.push(line);
+
+  // ラベル（スプライト風テキストはCanvasで）
+  const canvas2 = document.createElement("canvas");
+  canvas2.width = 256; canvas2.height = 64;
+  const ctx = canvas2.getContext("2d");
+  ctx.fillStyle = "rgba(0,0,0,0.7)";
+  ctx.roundRect(2,2,252,60,10); ctx.fill();
+  ctx.fillStyle = "#" + parseInt(ln.color).toString(16).padStart(6,"0");
+  ctx.font = "bold 28px sans-serif";
+  ctx.fillText(ln.id + " " + ln.real_m.toFixed(2) + "m", 12, 40);
+  const tex = new THREE.CanvasTexture(canvas2);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({{ map: tex, transparent: true }}));
+  const mx = (ln.x1 + ln.x2) / 2;
+  const my = (ln.y1 + ln.y2) / 2;
+  sprite.position.set(mx, my + 0.6, 0.1);
+  sprite.scale.set(3.5, 0.9, 1);
+  scene.add(sprite);
+}});
+
+// Raycaster
+const raycaster = new THREE.Raycaster();
+raycaster.params.Line.threshold = 0.3;
+const mouse = new THREE.Vector2();
+const popup = document.getElementById("popup");
+
+renderer.domElement.addEventListener("click", e => {{
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouse.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
+  mouse.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObjects(lineObjs);
+  if (hits.length > 0) {{
+    const d = hits[0].object.userData;
+    const oriMap = {{horizontal:"水平",vertical:"垂直",diagonal:"斜め"}};
+    document.getElementById("p-name").textContent = d.id;
+    document.getElementById("p-m").textContent   = d.real_m.toFixed(3) + " m";
+    document.getElementById("p-ori").textContent = oriMap[d.orientation] || d.orientation;
+    popup.style.display = "block";
+    popup.style.left = (e.clientX + 12) + "px";
+    popup.style.top  = (e.clientY - 10) + "px";
+  }} else {{
+    popup.style.display = "none";
+  }}
+}});
+
+// Manual orbit (drag to rotate)
+let isDragging = false, prevX = 0, prevY = 0;
+let theta = 0, phi = Math.PI / 4, radius = 30;
+const target = new THREE.Vector3(0, 0, 0);
+
+function updateCamera() {{
+  camera.position.x = target.x + radius * Math.sin(phi) * Math.sin(theta);
+  camera.position.y = target.y + radius * Math.cos(phi);
+  camera.position.z = target.z + radius * Math.sin(phi) * Math.cos(theta);
+  camera.lookAt(target);
+}}
+updateCamera();
+
+renderer.domElement.addEventListener("mousedown", e => {{ isDragging = true; prevX = e.clientX; prevY = e.clientY; }});
+window.addEventListener("mouseup", () => isDragging = false);
+window.addEventListener("mousemove", e => {{
+  if (!isDragging) return;
+  theta -= (e.clientX - prevX) * 0.01;
+  phi    = Math.max(0.1, Math.min(Math.PI - 0.1, phi - (e.clientY - prevY) * 0.01));
+  prevX = e.clientX; prevY = e.clientY;
+  updateCamera();
+}});
+renderer.domElement.addEventListener("wheel", e => {{
+  radius = Math.max(2, Math.min(100, radius + e.deltaY * 0.05));
+  updateCamera();
+  e.preventDefault();
+}}, {{ passive: false }});
+
+// Animate
+function animate() {{
+  requestAnimationFrame(animate);
+  renderer.render(scene, camera);
+}}
+animate();
+</script>
+</body>
+</html>"""
+    return html
