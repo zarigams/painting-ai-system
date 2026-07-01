@@ -1055,10 +1055,11 @@ elif st.session_state.step == 2:
                     _bc5.metric("0.5m未満",f"{_buckets['0.5m未満']}本")
 
                     if _disp_lines:
-                        # ── 線名テーブル（全件一覧）──────────────────
+                        # ── 線名テーブル（行選択でハイライト）──────────────────
                         _orient_abbr = {"horizontal":"水平↔","vertical":"垂直↕","diagonal":"斜め↗"}
-                        st.markdown(f"**📋 検出された線の一覧（{len(_disp_lines)}本）**")
+                        st.markdown(f"**📋 検出された線の一覧（{len(_disp_lines)}本）— 行をクリックで図面にハイライト表示**")
                         import math as _mth
+                        import pandas as _pd_ln
                         _tbl_rows = [
                             {
                                 "線名": l["id"],
@@ -1069,44 +1070,28 @@ elif st.session_state.step == 2:
                             }
                             for l in _disp_lines
                         ]
-                        import pandas as _pd_ln
-                        st.dataframe(
-                            _pd_ln.DataFrame(_tbl_rows),
+                        _df_lines = _pd_ln.DataFrame(_tbl_rows)
+                        _tbl_event = st.dataframe(
+                            _df_lines,
                             hide_index=True,
                             use_container_width=True,
-                            height=280,
+                            height=300,
+                            on_select="rerun",
+                            selection_mode="single-row",
                         )
-
-                        # ── 線名クリックで画像表示UI ──────────────────
-                        st.markdown(f"**🔎 線を選択して図面上で確認**")
-                        st.caption("上の表の「線名」を確認し、下のセレクトボックスで選ぶとその線がハイライト表示されます")
-
-                        # セレクトボックス用オプション構築
-                        _line_options = [
-                            f"{l['id']}  {l['real_m']:.2f}m  {_orient_abbr.get(l['orientation'],'')}"
-                            for l in _disp_lines
-                        ]
-                        _sel_key = "selected_line_name"
-                        _prev_sel = st.session_state.get(_sel_key, _line_options[0] if _line_options else None)
-                        # 前回の選択が現在のフィルタ結果に存在するか確認
-                        if _prev_sel not in _line_options:
-                            _prev_sel = _line_options[0] if _line_options else None
-
-                        _sel_line_str = st.selectbox(
-                            "線を選択",
-                            options=_line_options,
-                            index=_line_options.index(_prev_sel) if _prev_sel in _line_options else 0,
-                            key=_sel_key,
-                        )
-
-                        # 選択された線を特定
-                        _sel_line_id = _sel_line_str.split()[0] if _sel_line_str else None
-                        _sel_line_obj = next((l for l in _disp_lines if str(l["id"]) == _sel_line_id), None)
-
-                        if _sel_line_obj:
-                            from core.line_detector import highlight_line as _hl_fn
-                            _hl_bytes = _hl_fn(_ld["annotated_bytes"], _sel_line_obj)
-                            st.image(_hl_bytes, use_container_width=True, caption=f"🔴 {_sel_line_id}: {_sel_line_obj['real_m']:.3f}m  {_orient_abbr.get(_sel_line_obj['orientation'],'')}")
+                        # 行選択でハイライト表示
+                        _sel_rows = _tbl_event.selection.rows if hasattr(_tbl_event, "selection") else []
+                        if _sel_rows:
+                            _sel_row_idx = _sel_rows[0]
+                            _sel_line_obj = _disp_lines[_sel_row_idx] if _sel_row_idx < len(_disp_lines) else None
+                            if _sel_line_obj:
+                                from core.line_detector import highlight_line as _hl_fn
+                                _hl_bytes = _hl_fn(_ld["annotated_bytes"], _sel_line_obj)
+                                _sel_id = _sel_line_obj.get("id", "?")
+                                st.image(_hl_bytes, use_container_width=True,
+                                         caption=f"🔴 {_sel_id}: {_sel_line_obj['real_m']:.3f}m  {_orient_abbr.get(_sel_line_obj['orientation'],'')}")
+                        else:
+                            st.caption("☝️ 上の表の行をクリックすると、その線が図面上でハイライト表示されます")
 
                     # ── クリック割り当てUI ────────────────────────
                     st.markdown("---")

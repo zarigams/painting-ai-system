@@ -291,16 +291,18 @@ def generate_trace_svg(
     scale_m_per_px: float,
     svg_width: int = 900,
     min_length_m: float = 0.5,
+    group_by_block: bool = True,
 ) -> str:
     """
     検出した線分から、実寸比率で再現したSVGトレースを生成する。
 
     Parameters
     ----------
-    lines         : detect_lines_with_lengths() の lines
-    scale_m_per_px: 1ピクセルあたりの実寸(m)
-    svg_width     : SVGの幅(px)
-    min_length_m  : この長さ未満の線は描画しない
+    lines          : detect_lines_with_lengths() の lines
+    scale_m_per_px : 1ピクセルあたりの実寸(m)
+    svg_width      : SVGの幅(px)
+    min_length_m   : この長さ未満の線は描画しない
+    group_by_block : True のとき同ブロック（A/B/C…）内で最長1本のみ描画
 
     Returns
     -------
@@ -311,6 +313,16 @@ def generate_trace_svg(
 
     # 描画対象フィルタ
     draw_lines = [l for l in lines if l["real_m"] >= min_length_m]
+
+    # ブロックごとに最長1本だけ残す
+    if group_by_block:
+        from collections import defaultdict
+        block_best = {}
+        for ln in draw_lines:
+            blk = str(ln.get("id", "?"))[0]  # 先頭文字 A/B/C...
+            if blk not in block_best or ln["real_m"] > block_best[blk]["real_m"]:
+                block_best[blk] = ln
+        draw_lines = sorted(block_best.values(), key=lambda x: str(x.get("id", "")))
 
     if not draw_lines:
         return '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="100"><text x="10" y="50" font-size="16">表示可能な線なし</text></svg>'
@@ -366,16 +378,17 @@ def generate_trace_svg(
         for cx, cy in [(x1s,y1s),(x2s,y2s)]:
             lines_svg.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="3" fill="{col}"/>')
 
-        # 中点ラベル（1m以上のみ）
-        if ln["real_m"] >= 1.0:
-            mx = (x1s + x2s) / 2
-            my = (y1s + y2s) / 2
-            orient = _orient_label(ln["angle_deg"])
-            lbl = f"{ln['real_m']:.2f}m {orient}"
-            labels_svg.append(
-                f'<rect x="{mx-2:.1f}" y="{my-10:.1f}" width="{len(lbl)*7}" height="13" fill="white" opacity="0.8"/>'
-                f'<text x="{mx:.1f}" y="{my:.1f}" font-size="10" fill="{col}" font-weight="bold">{lbl}</text>'
-            )
+        # 中点ラベル（ブロック名 + 寸法 + 向き）
+        line_id = str(ln.get("id", ""))
+        mx = (x1s + x2s) / 2
+        my = (y1s + y2s) / 2
+        orient = _orient_label(ln["angle_deg"])
+        lbl = f"{line_id} {ln['real_m']:.2f}m {orient}"
+        lbl_w = max(len(lbl) * 7, 50)
+        labels_svg.append(
+            f'<rect x="{mx-2:.1f}" y="{my-13:.1f}" width="{lbl_w}" height="15" fill="white" opacity="0.85" rx="2"/>'
+            f'<text x="{mx+1:.1f}" y="{my:.1f}" font-size="11" fill="{col}" font-weight="bold">{lbl}</text>'
+        )
 
     # 凡例
     legend = (
