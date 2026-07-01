@@ -1128,7 +1128,8 @@ elif st.session_state.step == 2:
                     _ann_orig_w = _ann_pil.size[0]
                     _ann_disp_w = min(880, _ann_orig_w)
                     _ann_scale_r = _ann_orig_w / _ann_disp_w  # 表示→原画像の変換係数
-                    _ann_coord = _sic(_ld["annotated_bytes"], key=_ann_key, width=_ann_disp_w)
+                    # bytes→PIL Image に変換（_sic は bytes を受け付けない）
+                    _ann_coord = _sic(_ann_pil, key=_ann_key, width=_ann_disp_w)
 
                     if _ann_coord:
                         from core.line_detector import find_nearest_line, highlight_line
