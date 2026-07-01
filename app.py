@@ -1041,6 +1041,7 @@ elif st.session_state.step == 2:
                         st.markdown(f"**📋 検出された線（{len(_disp_lines)}本）上位50本**")
                         _df_rows = [
                             {
+                                "#": l.get("id", ""),
                                 "実寸（m）": l["real_m"],
                                 "向き": {"horizontal":"水平↔","vertical":"垂直↕","diagonal":"斜め↗"}.get(l["orientation"],""),
                                 "傾き角(°)": l["angle_deg"],
@@ -1098,7 +1099,14 @@ elif st.session_state.step == 2:
 
                     from streamlit_image_coordinates import streamlit_image_coordinates as _sic
                     _ann_key = f"line_assign_{st.session_state.get('_assign_click_n', 0)}"
-                    _ann_coord = _sic(_ld["annotated_bytes"], key=_ann_key, use_container_width=True)
+                    # annotated_bytes の実寸を取得してスケール係数を計算
+                    import io as _io2
+                    from PIL import Image as _PILImg2
+                    _ann_pil = _PILImg2.open(_io2.BytesIO(_ld["annotated_bytes"]))
+                    _ann_orig_w = _ann_pil.size[0]
+                    _ann_disp_w = min(880, _ann_orig_w)
+                    _ann_scale_r = _ann_orig_w / _ann_disp_w  # 表示→原画像の変換係数
+                    _ann_coord = _sic(_ld["annotated_bytes"], key=_ann_key, width=_ann_disp_w)
 
                     if _ann_coord:
                         from core.line_detector import find_nearest_line, highlight_line
@@ -1109,8 +1117,9 @@ elif st.session_state.step == 2:
                         _ann_img_pil = _PILImg.open(_io.BytesIO(_ld["annotated_bytes"]))
                         _orig_w, _orig_h = _ann_img_pil.size
                         # 座標がそのまま原画像空間なら補正不要
-                        _cx = _ann_coord["x"]
-                        _cy = _ann_coord["y"]
+                        # 表示サイズ→原画像スペースに変換
+                        _cx = _ann_coord["x"] * _ann_scale_r
+                        _cy = _ann_coord["y"] * _ann_scale_r
 
                         _nearest = find_nearest_line(_cx, _cy, _ld["lines"], max_dist_px=60)
 
@@ -1120,8 +1129,9 @@ elif st.session_state.step == 2:
                             st.image(_hl_bytes, use_container_width=True)
 
                             _orient_label = {"horizontal":"水平","vertical":"垂直","diagonal":"斜め"}.get(_nearest["orientation"],"")
+                            _ln_num = _nearest.get("id", "?")
                             st.success(
-                                f"✅ 検出した線：**{_nearest['real_m']:.3f} m**  "
+                                f"✅ #{_ln_num} の線：**{_nearest['real_m']:.3f} m**  "
                                 f"（{_orient_label}  距離:{_nearest['_dist_px']}px）"
                             )
 

@@ -119,8 +119,10 @@ def detect_lines_with_lengths(
                 "orientation": orientation,
             })
 
-    # 実寸長で降順ソート
+    # 実寸長で降順ソートして番号付与
     lines_info.sort(key=lambda x: x["real_m"], reverse=True)
+    for _i, _ln in enumerate(lines_info, 1):
+        _ln["id"] = _i
 
     # ── ラベル付き画像生成 ──────────────────────────────────
     img_pil = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
@@ -137,6 +139,7 @@ def detect_lines_with_lengths(
     for ln in lines_info[:200]:
         col  = _line_color(ln["real_m"])
         x1, y1, x2, y2 = ln["x1"], ln["y1"], ln["x2"], ln["y2"]
+        ln_id = ln.get("id", "?")
 
         # 線
         draw.line([(x1, y1), (x2, y2)], fill=col, width=2)
@@ -146,11 +149,11 @@ def detect_lines_with_lengths(
         draw.ellipse([(x1-r, y1-r), (x1+r, y1+r)], fill=col)
         draw.ellipse([(x2-r, y2-r), (x2+r, y2+r)], fill=col)
 
-        # 中点ラベル（1m以上のみ）
-        if ln["real_m"] >= 1.0:
+        # 中点ラベル: #番号 + 実寸（0.5m以上）
+        if ln["real_m"] >= 0.5:
             mx = (x1 + x2) // 2
             my = (y1 + y2) // 2
-            label = f"{ln['real_m']:.2f}m"
+            label = f"#{ln_id} {ln['real_m']:.2f}m"
             try:
                 bbox = draw.textbbox((mx, my), label, font=font_sm)
                 pad = 2
