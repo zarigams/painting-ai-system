@@ -250,3 +250,115 @@ def highlight_line(img_bytes: bytes, line: dict, color: tuple = (255, 50, 50, 25
     buf = io.BytesIO()
     result.save(buf, format="PNG")
     return buf.getvalue()
+
+
+def generate_trace_svg(
+    lines: list,
+    scale_m_per_px: float,
+    svg_width: int = 900,
+    min_length_m: float = 0.5,
+) -> str:
+    """
+    検出した線分から、実寸比率で再現したSVGトレースを生成する。
+
+    Parameters
+    ----------
+    lines         : detect_lines_with_lengths() の lines
+    scale_m_per_px: 1ピクセルあたりの実寸(m)
+    svg_width     : SVGの幅(px)
+    min_length_m  : この長さ未満の線は描画しない
+
+    Returns
+    -------
+    SVG文字列
+    """
+    if not lines:
+        return '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="100"><text x="10" y="50" font-size="16">検出線なし</text></svg>'
+
+    # 描画対象フィルタ
+    draw_lines = [l for l in lines if l["real_m"] >= min_length_m]
+
+    if not draw_lines:
+        return '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="100"><text x="10" y="50" font-size="16">表示可能な線なし</text></svg>'
+
+    # バウンディングボックス計算（原画像ピクセル座標）
+    xs = [l["x1"] for l in draw_lines] + [l["x2"] for l in draw_lines]
+    ys = [l["y1"] for l in draw_lines] + [l["y2"] for l in draw_lines]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    orig_w = max_x - min_x or 1
+    orig_h = max_y - min_y or 1
+
+    # スケーリング（SVG幅に合わせる）
+    margin = 40
+    draw_w = svg_width - margin * 2
+    draw_h = int(draw_w * orig_h / orig_w)
+    svg_h  = draw_h + margin * 2 + 60  # 下部にラベル分を追加
+
+    def tx(x): return margin + (x - min_x) * draw_w / orig_w
+    def ty(y): return margin + (y - min_y) * draw_h / orig_h
+
+    # 色マップ
+    def _col(real_m):
+        if real_m >= 8.0:  return "#00aa33"  # 緑
+        if real_m >= 3.0:  return "#ff8800"  # 橙
+        if real_m >= 1.0:  return "#2266ff"  # 青
+        return "#aa44aa"                      # 紫
+
+    # 向き別グループ（角度）
+    def _orient_label(angle_deg):
+        if angle_deg < 5:
+            return "H"   # 水平
+        elif angle_deg > 85:
+            return "V"   # 垂直
+        else:
+            return f"{angle_deg:.0f}°"
+
+    lines_svg = []
+    labels_svg = []
+
+    for ln in draw_lines:
+        x1s, y1s = tx(ln["x1"]), ty(ln["y1"])
+        x2s, y2s = tx(ln["x2"]), ty(ln["y2"])
+        col  = _col(ln["real_m"])
+        # 真角度（始点→終点の方向、0-360°）
+        true_angle = math.degrees(math.atan2(-(ln["y2"]-ln["y1"]), ln["x2"]-ln["x1"])) % 360
+
+        lines_svg.append(
+            f'<line x1="{x1s:.1f}" y1="{y1s:.1f}" x2="{x2s:.1f}" y2="{y2s:.1f}" '
+            f'stroke="{col}" stroke-width="2" stroke-linecap="round"/>'
+        )
+        # 端点
+        for cx, cy in [(x1s,y1s),(x2s,y2s)]:
+            lines_svg.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="3" fill="{col}"/>')
+
+        # 中点ラベル（1m以上のみ）
+        if ln["real_m"] >= 1.0:
+            mx = (x1s + x2s) / 2
+            my = (y1s + y2s) / 2
+            orient = _orient_label(ln["angle_deg"])
+            lbl = f"{ln['real_m']:.2f}m {orient}"
+            labels_svg.append(
+                f'<rect x="{mx-2:.1f}" y="{my-10:.1f}" width="{len(lbl)*7}" height="13" fill="white" opacity="0.8"/>'
+                f'<text x="{mx:.1f}" y="{my:.1f}" font-size="10" fill="{col}" font-weight="bold">{lbl}</text>'
+            )
+
+    # 凡例
+    legend = (
+        f'<text x="{margin}" y="{svg_h-35}" font-size="11" fill="#00aa33">■ 8m以上</text>'
+        f'<text x="{margin+80}" y="{svg_h-35}" font-size="11" fill="#ff8800">■ 3m以上</text>'
+        f'<text x="{margin+160}" y="{svg_h-35}" font-size="11" fill="#2266ff">■ 1m以上</text>'
+        f'<text x="{margin+240}" y="{svg_h-35}" font-size="11" fill="#aa44aa">■ 1m未満</text>'
+        f'<text x="{margin}" y="{svg_h-18}" font-size="10" fill="#666">'
+        f'H=水平  V=垂直  数字=傾き角度  計{len(draw_lines)}本</text>'
+    )
+
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{svg_width}" height="{svg_h}" '
+        f'style="background:#f8f8f8;border:1px solid #ddd">'
+        f'{"".join(lines_svg)}'
+        f'{"".join(labels_svg)}'
+        f'{legend}'
+        f'</svg>'
+    )
+    return svg

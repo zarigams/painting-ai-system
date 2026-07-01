@@ -1005,9 +1005,27 @@ elif st.session_state.step == 2:
                     _sc3.metric("垂直（高さ）",f"{_stats['vertical']}本")
                     _sc4.metric("斜め",        f"{_stats['diagonal']}本")
 
-                    # ラベル付き画像
-                    st.markdown("**🖼 検出結果（色：🟢5m以上 🟠3m以上 🔵1m以上 🟣1m未満）**")
-                    st.image(_ld["annotated_bytes"], use_container_width=True)
+                    # ラベル付き画像 / トレースビュー をタブで切り替え
+                    _view_tab1, _view_tab2 = st.tabs(["🖼 ラベル付き図面", "📐 ベクタートレース（角度＋寸法）"])
+
+                    with _view_tab1:
+                        st.caption("色：🟢8m以上 🟠3m以上 🔵1m以上 🟣1m未満")
+                        st.image(_ld["annotated_bytes"], use_container_width=True)
+
+                    with _view_tab2:
+                        st.caption(
+                            "検出した線を実寸比率・実際の角度でトレース表示。"
+                            "H=水平 / V=垂直 / 数字=傾き角度（°）"
+                        )
+                        _trace_min = st.slider("最小表示長（m）", 0.3, 5.0, 1.0, step=0.1, key="trace_min_len")
+                        from core.line_detector import generate_trace_svg
+                        _svg = generate_trace_svg(
+                            lines=_ld["lines"],
+                            scale_m_per_px=_ld["scale_m_per_px"],
+                            svg_width=860,
+                            min_length_m=_trace_min,
+                        )
+                        st.markdown(_svg, unsafe_allow_html=True)
 
                     # 線一覧テーブル
                     import pandas as pd
@@ -1025,7 +1043,8 @@ elif st.session_state.step == 2:
                             {
                                 "実寸（m）": l["real_m"],
                                 "向き": {"horizontal":"水平↔","vertical":"垂直↕","diagonal":"斜め↗"}.get(l["orientation"],""),
-                                "角度(°)": l["angle_deg"],
+                                "傾き角(°)": l["angle_deg"],
+                                "真角度(°)": round(__import__("math").degrees(__import__("math").atan2(-(l["y2"]-l["y1"]), l["x2"]-l["x1"])) % 360, 1),
                                 "ピクセル長": int(l["px_length"]),
                             }
                             for l in _disp_lines[:50]
