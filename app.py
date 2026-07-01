@@ -1037,33 +1037,55 @@ elif st.session_state.step == 2:
                     else:
                         _disp_lines = _all_lines
 
-                    if _disp_lines:
-                        st.markdown(f"**📋 検出された線（{len(_disp_lines)}本）上位50本**")
-                        _df_rows = [
-                            {
-                                "#": l.get("id", ""),
-                                "実寸（m）": l["real_m"],
-                                "向き": {"horizontal":"水平↔","vertical":"垂直↕","diagonal":"斜め↗"}.get(l["orientation"],""),
-                                "傾き角(°)": l["angle_deg"],
-                                "真角度(°)": round(__import__("math").degrees(__import__("math").atan2(-(l["y2"]-l["y1"]), l["x2"]-l["x1"])) % 360, 1),
-                                "ピクセル長": int(l["px_length"]),
-                            }
-                            for l in _disp_lines[:50]
-                        ]
-                        st.dataframe(pd.DataFrame(_df_rows), hide_index=True, use_container_width=True)
+                    # 長さ別ヒストグラム的サマリー（常に表示）
+                    _buckets = {"8m以上":0,"3〜8m":0,"1〜3m":0,"0.5〜1m":0,"0.5m未満":0}
+                    for l in _all_lines:
+                        m = l["real_m"]
+                        if m >= 8: _buckets["8m以上"] += 1
+                        elif m >= 3: _buckets["3〜8m"] += 1
+                        elif m >= 1: _buckets["1〜3m"] += 1
+                        elif m >= 0.5: _buckets["0.5〜1m"] += 1
+                        else: _buckets["0.5m未満"] += 1
+                    st.markdown("**📊 長さ分布**")
+                    _bc1, _bc2, _bc3, _bc4, _bc5 = st.columns(5)
+                    _bc1.metric("8m以上", f"{_buckets['8m以上']}本")
+                    _bc2.metric("3〜8m",  f"{_buckets['3〜8m']}本")
+                    _bc3.metric("1〜3m",  f"{_buckets['1〜3m']}本")
+                    _bc4.metric("0.5〜1m",f"{_buckets['0.5〜1m']}本")
+                    _bc5.metric("0.5m未満",f"{_buckets['0.5m未満']}本")
 
-                        # 長さ別ヒストグラム的サマリー
-                        _buckets = {"8m以上":0,"3〜8m":0,"1〜3m":0,"0.5〜1m":0,"0.5m未満":0}
-                        for l in _all_lines:
-                            m = l["real_m"]
-                            if m >= 8: _buckets["8m以上"] += 1
-                            elif m >= 3: _buckets["3〜8m"] += 1
-                            elif m >= 1: _buckets["1〜3m"] += 1
-                            elif m >= 0.5: _buckets["0.5〜1m"] += 1
-                            else: _buckets["0.5m未満"] += 1
-                        st.markdown("**📊 長さ分布**")
-                        for k, v in _buckets.items():
-                            st.write(f"　{k}：{v}本")
+                    if _disp_lines:
+                        # ── 線名クリックで画像表示UI ──────────────────
+                        st.markdown(f"**🔎 線を選択して図面上で確認（全{len(_disp_lines)}本）**")
+                        st.caption("線の名前（A1, B2…）を選ぶと、その線が図面上でハイライト表示されます")
+
+                        # セレクトボックス用オプション構築
+                        _orient_abbr = {"horizontal":"水平↔","vertical":"垂直↕","diagonal":"斜め↗"}
+                        _line_options = [
+                            f"{l['id']}  {l['real_m']:.2f}m  {_orient_abbr.get(l['orientation'],'')}"
+                            for l in _disp_lines
+                        ]
+                        _sel_key = "selected_line_name"
+                        _prev_sel = st.session_state.get(_sel_key, _line_options[0] if _line_options else None)
+                        # 前回の選択が現在のフィルタ結果に存在するか確認
+                        if _prev_sel not in _line_options:
+                            _prev_sel = _line_options[0] if _line_options else None
+
+                        _sel_line_str = st.selectbox(
+                            "線を選択",
+                            options=_line_options,
+                            index=_line_options.index(_prev_sel) if _prev_sel in _line_options else 0,
+                            key=_sel_key,
+                        )
+
+                        # 選択された線を特定
+                        _sel_line_id = _sel_line_str.split()[0] if _sel_line_str else None
+                        _sel_line_obj = next((l for l in _disp_lines if str(l["id"]) == _sel_line_id), None)
+
+                        if _sel_line_obj:
+                            from core.line_detector import highlight_line as _hl_fn
+                            _hl_bytes = _hl_fn(_ld["annotated_bytes"], _sel_line_obj)
+                            st.image(_hl_bytes, use_container_width=True, caption=f"🔴 {_sel_line_id}: {_sel_line_obj['real_m']:.3f}m  {_orient_abbr.get(_sel_line_obj['orientation'],'')}")
 
                     # ── クリック割り当てUI ────────────────────────
                     st.markdown("---")

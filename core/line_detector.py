@@ -31,6 +31,37 @@ def _line_color(real_m: float) -> tuple:
         return (180, 50, 180, 160)    # 紫：細かい
 
 
+def assign_block_names(lines: list, img_w: int, img_h: int, cols: int = 5) -> None:
+    """
+    各線分の中点座標に基づいて空間ブロック名（A1, B2, C3 …）を付与する。
+    左→右の列を A, B, C, D, E … とし、各列内で実寸長降順に 1, 2, 3 … と番号付け。
+    lines リストを in-place で更新する（"id" フィールドに書き込む）。
+    """
+    import math as _math
+    if not lines:
+        return
+    col_w = img_w / cols
+    # 各線に列インデックスを割り当て
+    for ln in lines:
+        mx = (ln["x1"] + ln["x2"]) / 2
+        col_idx = min(int(mx / col_w), cols - 1)
+        ln["_col_idx"] = col_idx
+    # 列ごとに実寸長降順でナンバリング
+    from collections import defaultdict
+    col_groups = defaultdict(list)
+    for ln in lines:
+        col_groups[ln["_col_idx"]].append(ln)
+    for col_idx in range(cols):
+        letter = chr(65 + col_idx)  # 0→A, 1→B, ...
+        group = col_groups[col_idx]
+        # 実寸長降順（すでに全体ソート済みなのでそのまま）
+        for num, ln in enumerate(group, 1):
+            ln["id"] = f"{letter}{num}"
+    # 一時フィールド削除
+    for ln in lines:
+        ln.pop("_col_idx", None)
+
+
 def detect_lines_with_lengths(
     img_bytes: bytes,
     scale_denominator: int = 100,
@@ -119,10 +150,10 @@ def detect_lines_with_lengths(
                 "orientation": orientation,
             })
 
-    # 実寸長で降順ソートして番号付与
+    # 実寸長で降順ソート → 空間ブロック名（A1, B2...）付与
     lines_info.sort(key=lambda x: x["real_m"], reverse=True)
-    for _i, _ln in enumerate(lines_info, 1):
-        _ln["id"] = _i
+    h, w = img_bgr.shape[:2]
+    assign_block_names(lines_info, img_w=w, img_h=h)
 
     # ── ラベル付き画像生成 ──────────────────────────────────
     img_pil = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
@@ -153,7 +184,7 @@ def detect_lines_with_lengths(
         if ln["real_m"] >= 0.5:
             mx = (x1 + x2) // 2
             my = (y1 + y2) // 2
-            label = f"#{ln_id} {ln['real_m']:.2f}m"
+            label = f"{ln_id} {ln['real_m']:.2f}m"
             try:
                 bbox = draw.textbbox((mx, my), label, font=font_sm)
                 pad = 2
