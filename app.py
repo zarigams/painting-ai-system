@@ -1167,6 +1167,88 @@ elif st.session_state.step == 2:
             else:
                 st.info("南面・東面の幅を入力すると、屋根勾配・各面の外壁・屋根面積が自動計算されます。")
 
+        # ── 付帯部 4面別入力（積算集計表用） ──────────────────────
+        with st.expander("📋 付帯部寸法（4面別入力）→ 積算集計表を生成", expanded=False):
+            st.caption("各面の付帯部寸法を入力すると、サンプルExcelと同じ形式の積算集計表を出力できます。")
+            from core.estimation_sheet_builder import FACES, FACE_LABEL, make_empty_face_inputs
+
+            # session_state 初期化
+            if "face_inputs" not in st.session_state:
+                st.session_state.face_inputs = make_empty_face_inputs()
+            fi = st.session_state.face_inputs
+
+            # --- 入力テーブル（タブで面を切り替え） ---
+            tabs_fi = st.tabs(["東面", "西面", "南面", "北面"])
+            face_keys = ["east", "west", "south", "north"]
+
+            for _ti, (_tab, _fk) in enumerate(zip(tabs_fi, face_keys)):
+                with _tab:
+                    _fi = fi[_fk]
+                    _c1, _c2 = st.columns(2)
+                    _fi["roof_m2"]            = _c1.number_input(f"屋根（㎡）",           min_value=0.0, value=float(_fi.get("roof_m2",0)),            step=0.1, format="%.3f", key=f"fi_{_fk}_roof")
+                    _fi["roof_opening_m2"]    = _c2.number_input(f"屋根開口控除（㎡）",   min_value=0.0, value=float(_fi.get("roof_opening_m2",0)),    step=0.1, format="%.3f", key=f"fi_{_fk}_roof_o")
+                    _fi["fascia_m"]           = _c1.number_input(f"破風・鼻隠（m）",      min_value=0.0, value=float(_fi.get("fascia_m",0)),           step=0.1, format="%.2f", key=f"fi_{_fk}_fascia")
+                    _fi["soffit_m2"]          = _c2.number_input(f"軒天（㎡）",           min_value=0.0, value=float(_fi.get("soffit_m2",0)),          step=0.1, format="%.2f", key=f"fi_{_fk}_soffit")
+                    _fi["entrance_soffit_m2"] = _c1.number_input(f"玄関庇軒天（㎡）",    min_value=0.0, value=float(_fi.get("entrance_soffit_m2",0)), step=0.1, format="%.2f", key=f"fi_{_fk}_eso")
+                    _fi["veranda_soffit_m2"]  = _c2.number_input(f"ベランダ軒天（㎡）",  min_value=0.0, value=float(_fi.get("veranda_soffit_m2",0)),  step=0.1, format="%.2f", key=f"fi_{_fk}_vso")
+                    _fi["sb_m"]               = _c1.number_input(f"SB（m）",             min_value=0.0, value=float(_fi.get("sb_m",0)),               step=0.1, format="%.2f", key=f"fi_{_fk}_sb")
+                    _fi["base_cut_m"]         = _c2.number_input(f"土台水切（m）",        min_value=0.0, value=float(_fi.get("base_cut_m",0)),         step=0.1, format="%.2f", key=f"fi_{_fk}_bcut")
+                    _fi["mid_cut_m"]          = _c1.number_input(f"中間水切（m）",        min_value=0.0, value=float(_fi.get("mid_cut_m",0)),          step=0.1, format="%.2f", key=f"fi_{_fk}_mcut")
+                    _fi["veranda_cut_m"]      = _c2.number_input(f"ベランダ水切（m）",   min_value=0.0, value=float(_fi.get("veranda_cut_m",0)),      step=0.1, format="%.2f", key=f"fi_{_fk}_vcut")
+                    _fi["gutter_m"]           = _c1.number_input(f"雨樋（m）",            min_value=0.0, value=float(_fi.get("gutter_m",0)),           step=0.1, format="%.2f", key=f"fi_{_fk}_gutter")
+                    _fi["opening_seal_m"]     = _c2.number_input(f"開口部廻りシール（m）",min_value=0.0, value=float(_fi.get("opening_seal_m",0)),     step=0.1, format="%.2f", key=f"fi_{_fk}_oseal")
+                    _fi["joint_seal_m"]       = _c1.number_input(f"目地シール（m）",      min_value=0.0, value=float(_fi.get("joint_seal_m",0)),       step=0.1, format="%.2f", key=f"fi_{_fk}_jseal")
+                    _fi["foundation_m2"]      = _c2.number_input(f"基礎（㎡）",           min_value=0.0, value=float(_fi.get("foundation_m2",0)),      step=0.1, format="%.2f", key=f"fi_{_fk}_found")
+                    _fi["toplight_seal_m"]    = _c1.number_input(f"トップライト廻りシール（m）",min_value=0.0, value=float(_fi.get("toplight_seal_m",0)), step=0.1, format="%.2f", key=f"fi_{_fk}_toplight")
+                    _fi["window_top_m"]       = _c2.number_input(f"出窓天端鉄部（m）",   min_value=0.0, value=float(_fi.get("window_top_m",0)),       step=0.1, format="%.2f", key=f"fi_{_fk}_wtop")
+                    _fi["beam_m"]             = _c1.number_input(f"付梁（m）",            min_value=0.0, value=float(_fi.get("beam_m",0)),             step=0.1, format="%.2f", key=f"fi_{_fk}_beam")
+                    fi[_fk] = _fi
+
+            st.session_state.face_inputs = fi
+
+            # --- プレビュー（geoがあれば積算集計表を即時プレビュー） ---
+            _geo_for_est = st.session_state.get("geo_result", {})
+            if _geo_for_est and not _geo_for_est.get("error"):
+                from core.estimation_sheet_builder import build_estimation_data
+                import pandas as pd
+                _est_data = build_estimation_data(
+                    geo=_geo_for_est,
+                    face_inputs=fi,
+                    project={
+                        "client_name":   st.session_state.get("project", {}).get("client_name", ""),
+                        "site_address":  st.session_state.get("project", {}).get("site_address", ""),
+                        "building_type": st.session_state.get("project", {}).get("building_type", ""),
+                        "roof_type":     st.session_state.get("project", {}).get("roof_type", ""),
+                        "company_name":  st.session_state.get("company_name", ""),
+                        "sales_rep":     st.session_state.get("project", {}).get("sales_rep", ""),
+                    },
+                )
+                st.session_state["estimation_sheet_data"] = _est_data
+
+                # プレビューテーブル
+                _preview_rows = []
+                for _r in _est_data["rows"]:
+                    if _r["total"] > 0:
+                        _fv = _r["faces"]
+                        _preview_rows.append({
+                            "項目": _r["label"],
+                            "単位": _r["unit"],
+                            "東面": _fv["east"]["gross"] or "",
+                            "東控除": _fv["east"]["opening"] or "",
+                            "東計": _fv["east"]["net"] or "",
+                            "西面": _fv["west"]["gross"] or "",
+                            "南面": _fv["south"]["gross"] or "",
+                            "北面": _fv["north"]["gross"] or "",
+                            "合計": _r["total"],
+                        })
+                if _preview_rows:
+                    st.markdown("##### 📊 積算集計表プレビュー（0以外の項目のみ）")
+                    st.dataframe(pd.DataFrame(_preview_rows), hide_index=True, use_container_width=True)
+                else:
+                    st.info("付帯部寸法を入力すると積算集計表プレビューが表示されます。")
+            else:
+                st.info("先に「📐 幾何学計算」で各面の幅を入力してください。外壁の計算結果が積算集計表に反映されます。")
+
         # ── 合計表示 ────────────────────────────────────────
         st.metric("合計（税込）", f"¥{est.get('total', 0):,}")
 
@@ -1527,6 +1609,27 @@ elif st.session_state.step == 4:
     else:
         st.warning("明細が空です。数量フォームで面積・長さを入力してください。")
 
+    # ── 積算集計表プレビュー（付帯部4面入力済みの場合） ─────────
+    _est_sheet = st.session_state.get("estimation_sheet_data")
+    if _est_sheet:
+        import pandas as _pd2
+        _prev = [
+            {
+                "項目": _r["label"], "単位": _r["unit"],
+                "東面": _r["faces"]["east"]["gross"] or "",
+                "東控除": _r["faces"]["east"]["opening"] or "",
+                "東計": _r["faces"]["east"]["net"] or "",
+                "西面": _r["faces"]["west"]["gross"] or "",
+                "南面": _r["faces"]["south"]["gross"] or "",
+                "北面": _r["faces"]["north"]["gross"] or "",
+                "合計": _r["total"],
+            }
+            for _r in _est_sheet["rows"] if _r["total"] > 0
+        ]
+        if _prev:
+            with st.expander("📋 積算集計表（4面別）", expanded=True):
+                st.dataframe(_pd2.DataFrame(_prev), hide_index=True, use_container_width=True)
+
     st.markdown("---")
 
     # ── Excel出力 ────────────────────────────────────────────
@@ -1575,6 +1678,7 @@ elif st.session_state.step == 4:
                                 sales_rep=proj.get("sales_rep", ""),
                                 company_name=st.session_state.get("company_name") or "",
                                 building_type=proj.get("building_type", ""),
+                                estimation_sheet_data=st.session_state.get("estimation_sheet_data"),
                             )
                             with open(est_output, "rb") as f:
                                 est_bytes = f.read()
