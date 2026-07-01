@@ -1044,6 +1044,104 @@ elif st.session_state.step == 2:
                         st.markdown("**📊 長さ分布**")
                         for k, v in _buckets.items():
                             st.write(f"　{k}：{v}本")
+
+                    # ── クリック割り当てUI ────────────────────────
+                    st.markdown("---")
+                    st.markdown("### 🎯 線をクリックして項目に割り当て")
+                    st.caption("下の画像の線をクリック → 最も近い検出線を自動で特定 → 項目に値を登録します")
+
+                    # 割り当て先の選択
+                    _ASSIGN_ITEMS = {
+                        "破風・鼻隠（m）":        ("fascia_m",           "m"),
+                        "軒天（㎡）":             ("soffit_m2",          "㎡"),
+                        "玄関庇軒天（㎡）":       ("entrance_soffit_m2", "㎡"),
+                        "ベランダ軒天（㎡）":     ("veranda_soffit_m2",  "㎡"),
+                        "SB（m）":               ("sb_m",               "m"),
+                        "土台水切（m）":          ("base_cut_m",         "m"),
+                        "中間水切（m）":          ("mid_cut_m",          "m"),
+                        "ベランダ水切（m）":      ("veranda_cut_m",      "m"),
+                        "基礎（㎡）":            ("foundation_m2",      "㎡"),
+                        "出窓天端鉄部（m）":     ("window_top_m",       "m"),
+                        "付梁（m）":             ("beam_m",             "m"),
+                        "雨樋（m）":             ("gutter_m",           "m"),
+                        "開口部廻りシール（m）":  ("opening_seal_m",     "m"),
+                        "目地シール（m）":        ("joint_seal_m",       "m"),
+                        "屋根（㎡）":            ("roof_m2",            "㎡"),
+                    }
+                    _FACE_MAP = {"東面": "east", "西面": "west", "南面": "south", "北面": "north"}
+
+                    _ac1, _ac2, _ac3 = st.columns([2, 1, 1])
+                    _assign_item = _ac1.selectbox("割り当て項目", list(_ASSIGN_ITEMS.keys()), key="assign_item_sel")
+                    _assign_face = _ac2.selectbox("面", list(_FACE_MAP.keys()), key="assign_face_sel")
+                    _assign_mode = _ac3.radio("加算/上書き", ["上書き", "加算"], horizontal=True, key="assign_mode_sel")
+
+                    st.caption("👆 下の画像で線をクリックしてください")
+
+                    from streamlit_image_coordinates import streamlit_image_coordinates as _sic
+                    _ann_key = f"line_assign_{st.session_state.get('_assign_click_n', 0)}"
+                    _ann_coord = _sic(_ld["annotated_bytes"], key=_ann_key, use_container_width=True)
+
+                    if _ann_coord:
+                        from core.line_detector import find_nearest_line, highlight_line
+                        # streamlit_image_coordinates は表示サイズでの座標を返す場合がある
+                        # annotated_bytes の実寸を取得してスケール補正
+                        import io as _io
+                        from PIL import Image as _PILImg
+                        _ann_img_pil = _PILImg.open(_io.BytesIO(_ld["annotated_bytes"]))
+                        _orig_w, _orig_h = _ann_img_pil.size
+                        # 座標がそのまま原画像空間なら補正不要
+                        _cx = _ann_coord["x"]
+                        _cy = _ann_coord["y"]
+
+                        _nearest = find_nearest_line(_cx, _cy, _ld["lines"], max_dist_px=60)
+
+                        if _nearest:
+                            # ハイライト画像
+                            _hl_bytes = highlight_line(_ld["annotated_bytes"], _nearest)
+                            st.image(_hl_bytes, use_container_width=True)
+
+                            _orient_label = {"horizontal":"水平","vertical":"垂直","diagonal":"斜め"}.get(_nearest["orientation"],"")
+                            st.success(
+                                f"✅ 検出した線：**{_nearest['real_m']:.3f} m**  "
+                                f"（{_orient_label}  距離:{_nearest['_dist_px']}px）"
+                            )
+
+                            _item_key, _item_unit = _ASSIGN_ITEMS[_assign_item]
+                            _face_key = _FACE_MAP[_assign_face]
+
+                            if st.button(
+                                f"✅ {_assign_face}の「{_assign_item}」に **{_nearest['real_m']:.3f}{_item_unit}** を{'上書き' if _assign_mode=='上書き' else '加算'}する",
+                                type="primary", use_container_width=True, key="btn_assign_confirm"
+                            ):
+                                if "face_inputs" not in st.session_state:
+                                    from core.estimation_sheet_builder import make_empty_face_inputs
+                                    st.session_state.face_inputs = make_empty_face_inputs()
+                                _cur = st.session_state.face_inputs[_face_key].get(_item_key, 0) or 0
+                                if _assign_mode == "加算":
+                                    st.session_state.face_inputs[_face_key][_item_key] = round(_cur + _nearest["real_m"], 3)
+                                else:
+                                    st.session_state.face_inputs[_face_key][_item_key] = _nearest["real_m"]
+                                # クリックをリセット
+                                st.session_state["_assign_click_n"] = st.session_state.get("_assign_click_n", 0) + 1
+                                _new_val = st.session_state.face_inputs[_face_key][_item_key]
+                                st.success(f"🎉 登録完了！{_assign_face}「{_assign_item}」= {_new_val:.3f}{_item_unit}")
+                                st.rerun()
+                        else:
+                            st.warning("クリック位置の近くに線が見つかりませんでした。もう少し線に近い位置をクリックしてください。")
+
+                    # 現在の割り当て済み値を表示
+                    _fi_now = st.session_state.get("face_inputs", {})
+                    if any(_fi_now.get(f, {}) for f in ["east","west","south","north"]):
+                        st.markdown("**📋 現在の割り当て済み値**")
+                        import pandas as pd
+                        _assigned_rows = []
+                        for _fn, _fk in _FACE_MAP.items():
+                            for _iname, (_ikey, _iunit) in _ASSIGN_ITEMS.items():
+                                _v = _fi_now.get(_fk, {}).get(_ikey, 0)
+                                if _v:
+                                    _assigned_rows.append({"面": _fn, "項目": _iname, "値": f"{_v:.3f}{_iunit}"})
+                        if _assigned_rows:
+                            st.dataframe(pd.DataFrame(_assigned_rows), hide_index=True, use_container_width=True)
                 else:
                     st.info("「線を検出する」ボタンを押すと、図面の全線分と実寸が表示されます。")
 

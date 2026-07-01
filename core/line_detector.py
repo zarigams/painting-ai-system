@@ -179,3 +179,74 @@ def detect_lines_with_lengths(
         "scale_m_per_px":  round(m_per_px, 6),
         "stats":           stats,
     }
+
+
+def find_nearest_line(click_x: float, click_y: float, lines: list, max_dist_px: float = 40.0) -> dict | None:
+    """
+    クリック座標に最も近い検出済み線分を返す。
+
+    Parameters
+    ----------
+    click_x, click_y : クリック座標（元画像ピクセル空間）
+    lines            : detect_lines_with_lengths() の lines リスト
+    max_dist_px      : この距離（px）以内にある線のみ対象
+
+    Returns
+    -------
+    最近傍の線dict、または None（範囲内に線なし）
+    """
+    best = None
+    best_dist = max_dist_px
+
+    for ln in lines:
+        x1, y1, x2, y2 = ln["x1"], ln["y1"], ln["x2"], ln["y2"]
+        # 点から線分への最短距離
+        dx, dy = x2 - x1, y2 - y1
+        if dx == 0 and dy == 0:
+            dist = math.hypot(click_x - x1, click_y - y1)
+        else:
+            t = max(0.0, min(1.0, ((click_x - x1) * dx + (click_y - y1) * dy) / (dx*dx + dy*dy)))
+            nx, ny = x1 + t * dx, y1 + t * dy
+            dist = math.hypot(click_x - nx, click_y - ny)
+
+        if dist < best_dist:
+            best_dist = dist
+            best = {**ln, "_dist_px": round(dist, 1)}
+
+    return best
+
+
+def highlight_line(img_bytes: bytes, line: dict, color: tuple = (255, 50, 50, 255)) -> bytes:
+    """
+    指定した線を太く赤でハイライトした画像バイトを返す。
+    """
+    nparr   = np.frombuffer(img_bytes, np.uint8)
+    img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    img_pil = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
+    overlay = Image.new("RGBA", img_pil.size, (0, 0, 0, 0))
+    draw    = ImageDraw.Draw(overlay)
+
+    x1, y1, x2, y2 = line["x1"], line["y1"], line["x2"], line["y2"]
+    draw.line([(x1, y1), (x2, y2)], fill=color, width=5)
+    r = 6
+    draw.ellipse([(x1-r, y1-r), (x1+r, y1+r)], fill=color)
+    draw.ellipse([(x2-r, y2-r), (x2+r, y2+r)], fill=color)
+
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
+    except Exception:
+        font = ImageFont.load_default()
+
+    label = f"★ {line['real_m']:.3f}m"
+    mx, my = (x1+x2)//2, (y1+y2)//2
+    try:
+        bbox = draw.textbbox((mx-2, my-20), label, font=font)
+        draw.rectangle([bbox[0]-3, bbox[1]-3, bbox[2]+3, bbox[3]+3], fill=(255,255,0,220))
+    except Exception:
+        pass
+    draw.text((mx-2, my-20), label, fill=(180, 0, 0, 255), font=font)
+
+    result = Image.alpha_composite(img_pil.convert("RGBA"), overlay).convert("RGB")
+    buf = io.BytesIO()
+    result.save(buf, format="PNG")
+    return buf.getvalue()
