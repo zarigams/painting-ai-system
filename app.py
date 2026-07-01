@@ -1006,7 +1006,7 @@ elif st.session_state.step == 2:
                     _sc4.metric("斜め",        f"{_stats['diagonal']}本")
 
                     # ラベル付き画像 / トレースビュー をタブで切り替え
-                    _view_tab1, _view_tab2, _view_tab3 = st.tabs(["🖼 ラベル付き図面", "📐 ベクタートレース（角度＋寸法）", "🔮 3Dビュー（回転・クリック計測）"])
+                    _view_tab1, _view_tab2 = st.tabs(["🖼 ラベル付き図面", "📐 ベクタートレース（角度＋寸法）"])
 
                     with _view_tab1:
                         st.caption("色：🟢8m以上 🟠3m以上 🔵1m以上 🟣1m未満")
@@ -1027,19 +1027,6 @@ elif st.session_state.step == 2:
                         )
                         st.markdown(_svg, unsafe_allow_html=True)
 
-                    with _view_tab3:
-                        st.caption("🖱 ドラッグ: 回転  ホイール: ズーム  線をクリック: 線名と長さを表示")
-                        _3d_min = st.slider("最小表示長（m）", 0.3, 5.0, 0.5, step=0.1, key="3d_min_len")
-                        from core.line_detector import generate_3d_html
-                        _html3d = generate_3d_html(
-                            lines=_ld["lines"],
-                            scale_m_per_px=_ld["scale_m_per_px"],
-                            min_length_m=_3d_min,
-                            group_by_block=True,
-                            canvas_height=580,
-                        )
-                        import streamlit.components.v1 as _comp
-                        _comp.html(_html3d, height=600, scrolling=False)
 
                     # 線一覧テーブル
                     import pandas as pd
@@ -1069,44 +1056,80 @@ elif st.session_state.step == 2:
                     _bc5.metric("0.5m未満",f"{_buckets['0.5m未満']}本")
 
                     if _disp_lines:
-                        # ── 線名テーブル（行選択でハイライト）──────────────────
-                        _orient_abbr = {"horizontal":"水平↔","vertical":"垂直↕","diagonal":"斜め↗"}
-                        st.markdown(f"**📋 検出された線の一覧（{len(_disp_lines)}本）— 行をクリックで図面にハイライト表示**")
+                        # ── ブロック別テーブル（左）＋ハイライト画像（右） ──
                         import math as _mth
                         import pandas as _pd_ln
-                        _tbl_rows = [
-                            {
-                                "線名": l["id"],
-                                "実寸(m)": l["real_m"],
-                                "向き": _orient_abbr.get(l["orientation"], ""),
-                                "傾き角(°)": l["angle_deg"],
-                                "真角度(°)": round(_mth.degrees(_mth.atan2(-(l["y2"]-l["y1"]), l["x2"]-l["x1"])) % 360, 1),
-                            }
-                            for l in _disp_lines
-                        ]
-                        _df_lines = _pd_ln.DataFrame(_tbl_rows)
-                        _tbl_event = st.dataframe(
-                            _df_lines,
-                            hide_index=True,
-                            use_container_width=True,
-                            height=300,
-                            on_select="rerun",
-                            selection_mode="single-row",
-                        )
-                        # 行選択でハイライト表示
-                        _sel_rows = _tbl_event.selection.rows if hasattr(_tbl_event, "selection") else []
-                        if _sel_rows:
-                            _sel_row_idx = _sel_rows[0]
-                            _sel_line_obj = _disp_lines[_sel_row_idx] if _sel_row_idx < len(_disp_lines) else None
-                            if _sel_line_obj:
-                                from core.line_detector import highlight_line as _hl_fn
-                                _hl_bytes = _hl_fn(_ld["annotated_bytes"], _sel_line_obj)
-                                _sel_id = _sel_line_obj.get("id", "?")
-                                st.image(_hl_bytes, use_container_width=True,
-                                         caption=f"🔴 {_sel_id}: {_sel_line_obj['real_m']:.3f}m  {_orient_abbr.get(_sel_line_obj['orientation'],'')}")
-                        else:
-                            st.caption("☝️ 上の表の行をクリックすると、その線が図面上でハイライト表示されます")
-
+                        from collections import defaultdict as _ddict
+                        _orient_abbr = {"horizontal":"水平↔","vertical":"垂直↕","diagonal":"斜め↗"}
+                        _blk_groups = _ddict(list)
+                        for _ll in _disp_lines:
+                            _blk_groups[str(_ll.get("id","?"))[0]].append(_ll)
+                        if "_sel_line_id" not in st.session_state:
+                            st.session_state["_sel_line_id"] = None
+                        _col_tbl, _col_hl = st.columns([1, 1.4])
+                        with _col_tbl:
+                            st.markdown(f"**📋 線一覧（{len(_disp_lines)}本）— 行クリックで右に表示**")
+                            _sorted_blk = sorted(_blk_groups.keys())
+                            for _blk_letter in _sorted_blk:
+                                _blk_lines = _blk_groups[_blk_letter]
+                                _is_first = (_blk_letter == _sorted_blk[0])
+                                with st.expander(f"ブロック {_blk_letter}（{len(_blk_lines)}本）", expanded=_is_first):
+                                    _blk_rows = [
+                                        {
+                                            "線名": l["id"],
+                                            "実寸(m)": l["real_m"],
+                                            "向き": _orient_abbr.get(l["orientation"], ""),
+                                            "角度(°)": l["angle_deg"],
+                                        }
+                                        for l in _blk_lines
+                                    ]
+                                    _ev = st.dataframe(
+                                        _pd_ln.DataFrame(_blk_rows),
+                                        hide_index=True,
+                                        use_container_width=True,
+                                        height=min(200, 38 + 35 * len(_blk_lines)),
+                                        on_select="rerun",
+                                        selection_mode="single-row",
+                                        key=f"tbl_blk_{_blk_letter}",
+                                    )
+                                    _sr = _ev.selection.rows if hasattr(_ev, "selection") else []
+                                    if _sr:
+                                        st.session_state["_sel_line_id"] = _blk_lines[_sr[0]].get("id")
+                        with _col_hl:
+                            _sel_id_now = st.session_state.get("_sel_line_id")
+                            _sel_obj = next((l for l in _disp_lines if str(l.get("id")) == str(_sel_id_now)), None) if _sel_id_now else None
+                            if _sel_obj:
+                                from core.line_detector import highlight_line as _hl_fn2
+                                _hl_bytes2 = _hl_fn2(_ld["annotated_bytes"], _sel_obj)
+                                st.image(_hl_bytes2, use_container_width=True,
+                                         caption=f"🔴 {_sel_id_now}: {_sel_obj['real_m']:.3f}m  {_orient_abbr.get(_sel_obj['orientation'],'')}")
+                            else:
+                                st.info("👈 左の表の行をクリックすると、ここに図面上でハイライト表示されます")
+                                st.image(_ld["annotated_bytes"], use_container_width=True, caption="図面（選択前）")
+                        # ── AI 3D変換 ──────────────────────────────────────
+                        st.markdown("---")
+                        with st.expander("🏗 AI 3D変換（Beta）— GPT-4oが図面を読んで3Dモデルを生成", expanded=False):
+                            st.caption("図面画像をGPT-4o Visionに送信 → 壁・屋根・開口部を推定 → Three.jsで3D建物を表示。処理時間: 15〜30秒")
+                            if st.button("🔮 3D変換開始", type="primary", key="btn_3d_convert"):
+                                with st.spinner("GPT-4oが図面を解析中…（壁・屋根・窓の位置を推定しています）"):
+                                    try:
+                                        from core.building_3d_generator import analyze_drawing_3d, generate_building_3d_html
+                                        from modules.llm_client import _get_api_key
+                                        _api_key = _get_api_key()
+                                        _bldg_data = analyze_drawing_3d(drawing_img_bytes, _api_key)
+                                        if "error" in _bldg_data:
+                                            st.error(f"解析エラー: {_bldg_data['error']}")
+                                        else:
+                                            st.session_state["building_3d_data"] = _bldg_data
+                                            st.success(f"解析完了: {_bldg_data.get('building_type','')} / {_bldg_data.get('note','')}")
+                                    except Exception as _e3d:
+                                        st.error(f"3D変換エラー: {_e3d}")
+                            _bdata = st.session_state.get("building_3d_data")
+                            if _bdata and "error" not in _bdata:
+                                from core.building_3d_generator import generate_building_3d_html
+                                _html3d = generate_building_3d_html(_bdata, canvas_height=600)
+                                import streamlit.components.v1 as _comp3d
+                                _comp3d.html(_html3d, height=620, scrolling=False)
                     # ── クリック割り当てUI ────────────────────────
                     st.markdown("---")
                     st.markdown("### 🎯 線をクリックして項目に割り当て")
