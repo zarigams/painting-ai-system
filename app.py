@@ -1055,12 +1055,33 @@ elif st.session_state.step == 2:
                     _bc5.metric("0.5m未満",f"{_buckets['0.5m未満']}本")
 
                     if _disp_lines:
+                        # ── 線名テーブル（全件一覧）──────────────────
+                        _orient_abbr = {"horizontal":"水平↔","vertical":"垂直↕","diagonal":"斜め↗"}
+                        st.markdown(f"**📋 検出された線の一覧（{len(_disp_lines)}本）**")
+                        import math as _mth
+                        _tbl_rows = [
+                            {
+                                "線名": l["id"],
+                                "実寸(m)": l["real_m"],
+                                "向き": _orient_abbr.get(l["orientation"], ""),
+                                "傾き角(°)": l["angle_deg"],
+                                "真角度(°)": round(_mth.degrees(_mth.atan2(-(l["y2"]-l["y1"]), l["x2"]-l["x1"])) % 360, 1),
+                            }
+                            for l in _disp_lines
+                        ]
+                        import pandas as _pd_ln
+                        st.dataframe(
+                            _pd_ln.DataFrame(_tbl_rows),
+                            hide_index=True,
+                            use_container_width=True,
+                            height=280,
+                        )
+
                         # ── 線名クリックで画像表示UI ──────────────────
-                        st.markdown(f"**🔎 線を選択して図面上で確認（全{len(_disp_lines)}本）**")
-                        st.caption("線の名前（A1, B2…）を選ぶと、その線が図面上でハイライト表示されます")
+                        st.markdown(f"**🔎 線を選択して図面上で確認**")
+                        st.caption("上の表の「線名」を確認し、下のセレクトボックスで選ぶとその線がハイライト表示されます")
 
                         # セレクトボックス用オプション構築
-                        _orient_abbr = {"horizontal":"水平↔","vertical":"垂直↕","diagonal":"斜め↗"}
                         _line_options = [
                             f"{l['id']}  {l['real_m']:.2f}m  {_orient_abbr.get(l['orientation'],'')}"
                             for l in _disp_lines
