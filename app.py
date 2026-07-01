@@ -956,6 +956,97 @@ elif st.session_state.step == 2:
                     _zoom_dialog(drawing_img_bytes, "図面全体（AI読み取りマーカー付き）")
                 _render_click_ruler(drawing_img_bytes, ns="ruler")
 
+            # ── ② 線検出・全寸法抽出 ─────────────────────────────────
+            with st.expander("📏 図面の線を全て検出・実寸表示", expanded=False):
+                st.caption(
+                    "OpenCVで図面の全線分を検出し、縮尺で実寸（m）に換算して表示します。"
+                    "検出した数値を付帯部入力に活用できます。"
+                )
+                # 縮尺設定
+                _sc_col1, _sc_col2 = st.columns(2)
+                _scale_denom = _sc_col1.number_input(
+                    "縮尺（分母）", min_value=10, max_value=1000,
+                    value=int(st.session_state.get("drawing_data", {}).get("scale_denominator", 100) or 100),
+                    step=10, help="S=1/100 なら 100",
+                )
+                _min_len = _sc_col2.number_input(
+                    "最小検出長（m）", min_value=0.1, max_value=5.0,
+                    value=0.5, step=0.1, format="%.1f",
+                    help="これ未満の線は無視。小さくすると窓枠等も拾う",
+                )
+
+                _orient_filter = st.radio(
+                    "表示する線の向き",
+                    ["全て", "水平のみ（幅・長さ）", "垂直のみ（高さ）"],
+                    horizontal=True,
+                )
+
+                if st.button("🔍 線を検出する", type="primary", use_container_width=True, key="btn_line_detect"):
+                    with st.spinner("OpenCVで線を解析中…"):
+                        try:
+                            from core.line_detector import detect_lines_with_lengths
+                            _ld_result = detect_lines_with_lengths(
+                                img_bytes=drawing_img_bytes,
+                                scale_denominator=int(_scale_denom),
+                                min_length_m=float(_min_len),
+                            )
+                            st.session_state["line_detect_result"] = _ld_result
+                        except Exception as _e:
+                            st.error(f"線検出エラー: {_e}")
+                            import traceback
+                            st.code(traceback.format_exc())
+
+                _ld = st.session_state.get("line_detect_result")
+                if _ld and not _ld.get("error"):
+                    _stats = _ld["stats"]
+                    _sc1, _sc2, _sc3, _sc4 = st.columns(4)
+                    _sc1.metric("検出総数",   f"{_stats['total']}本")
+                    _sc2.metric("水平（幅）", f"{_stats['horizontal']}本")
+                    _sc3.metric("垂直（高さ）",f"{_stats['vertical']}本")
+                    _sc4.metric("斜め",        f"{_stats['diagonal']}本")
+
+                    # ラベル付き画像
+                    st.markdown("**🖼 検出結果（色：🟢5m以上 🟠3m以上 🔵1m以上 🟣1m未満）**")
+                    st.image(_ld["annotated_bytes"], use_container_width=True)
+
+                    # 線一覧テーブル
+                    import pandas as pd
+                    _all_lines = _ld["lines"]
+                    if _orient_filter == "水平のみ（幅・長さ）":
+                        _disp_lines = [l for l in _all_lines if l["orientation"] == "horizontal"]
+                    elif _orient_filter == "垂直のみ（高さ）":
+                        _disp_lines = [l for l in _all_lines if l["orientation"] == "vertical"]
+                    else:
+                        _disp_lines = _all_lines
+
+                    if _disp_lines:
+                        st.markdown(f"**📋 検出された線（{len(_disp_lines)}本）上位50本**")
+                        _df_rows = [
+                            {
+                                "実寸（m）": l["real_m"],
+                                "向き": {"horizontal":"水平↔","vertical":"垂直↕","diagonal":"斜め↗"}.get(l["orientation"],""),
+                                "角度(°)": l["angle_deg"],
+                                "ピクセル長": int(l["px_length"]),
+                            }
+                            for l in _disp_lines[:50]
+                        ]
+                        st.dataframe(pd.DataFrame(_df_rows), hide_index=True, use_container_width=True)
+
+                        # 長さ別ヒストグラム的サマリー
+                        _buckets = {"8m以上":0,"3〜8m":0,"1〜3m":0,"0.5〜1m":0,"0.5m未満":0}
+                        for l in _all_lines:
+                            m = l["real_m"]
+                            if m >= 8: _buckets["8m以上"] += 1
+                            elif m >= 3: _buckets["3〜8m"] += 1
+                            elif m >= 1: _buckets["1〜3m"] += 1
+                            elif m >= 0.5: _buckets["0.5〜1m"] += 1
+                            else: _buckets["0.5m未満"] += 1
+                        st.markdown("**📊 長さ分布**")
+                        for k, v in _buckets.items():
+                            st.write(f"　{k}：{v}本")
+                else:
+                    st.info("「線を検出する」ボタンを押すと、図面の全線分と実寸が表示されます。")
+
             # ── ③ 4面分割表示（図面を4等分し、各パネルで面ラベルを選んで計測） ──
             with st.expander("🪟 4面分割表示（南・北・東・西を個別に計測）", expanded=False):
                 st.caption(
