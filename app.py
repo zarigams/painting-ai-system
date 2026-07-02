@@ -309,6 +309,34 @@ with st.sidebar:
 
     if st.button("💰 単価設定", use_container_width=True, key="open_price_settings"):
         st.session_state.show_price_settings = not st.session_state.get("show_price_settings", False)
+
+    with st.expander("📋 過去の案件"):
+        from core.estimate_storage import list_estimates as _list_est, load_estimate as _load_est
+        _ests = _list_est(st.session_state.company_id)
+        if not _ests:
+            st.caption("まだ保存された案件はありません")
+        else:
+            st.caption(f"{len(_ests)}件 保存済み")
+            for _e in _ests[:30]:
+                _ec1, _ec2 = st.columns([4, 1])
+                with _ec1:
+                    st.markdown(
+                        f"**{_e['client_name']}**  \n"
+                        f"{_e['created_at']}  \n"
+                        f"¥{_e['total']:,}"
+                    )
+                with _ec2:
+                    if st.button("読込", key=f"load_est_{_e['id']}", use_container_width=True):
+                        _ed = _load_est(st.session_state.company_id, _e['id'])
+                        if _ed:
+                            st.session_state.project    = _ed["project"]
+                            st.session_state.quantities = _ed["quantities"]
+                            st.session_state.estimation = _ed["estimation"]
+                            if _ed.get("estimation_sheet_data"):
+                                st.session_state.estimation_sheet_data = _ed["estimation_sheet_data"]
+                            st.session_state.step = 4
+                            st.success(f"{_e['client_name']} を読み込みました")
+                            st.rerun()
     st.markdown("---")
 
     st.markdown("**🎨 テーマ**")
@@ -2039,6 +2067,23 @@ elif st.session_state.step == 4:
     else:
         st.warning("⚠️ Excelテンプレートが見つかりません")
         st.caption(f"パス: {template_path}")
+
+    # ── 案件保存 ───────────────────────────────────────────────
+    st.markdown("---")
+    from core.estimate_storage import save_estimate as _save_est
+    _saved_key = "estimate_saved_id"
+    if st.session_state.get(_saved_key):
+        st.info(f"💾 保存済み（ID: {st.session_state[_saved_key]}）")
+    if st.button("💾 この見積りを案件履歴に保存", use_container_width=True, key="save_estimate_btn"):
+        _eid = _save_est(
+            company_id=st.session_state.company_id,
+            project=st.session_state.get("project", {}),
+            quantities=st.session_state.get("quantities", {}),
+            estimation=st.session_state.get("estimation", {}),
+            estimation_sheet_data=st.session_state.get("estimation_sheet_data"),
+        )
+        st.session_state[_saved_key] = _eid
+        st.success(f"✅ 案件を保存しました")
 
     # ── アクションボタン ─────────────────────────────────────
     st.markdown("---")
