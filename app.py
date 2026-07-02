@@ -813,10 +813,7 @@ elif st.session_state.step == 2:
 
                     _pil_orig = Image.open(_io.BytesIO(_img_bytes))
                     _orig_w, _orig_h = _pil_orig.size
-                    _disp_w = 900 if _orig_w >= 900 else _orig_w
-                    _scale_r = _orig_w / _disp_w
-                    _disp_h  = int(_orig_h / _scale_r)
-                    _pil_disp = _pil_orig.resize((_disp_w, _disp_h), Image.LANCZOS)
+                    _base_w = 900 if _orig_w >= 900 else _orig_w
 
                     # セッション初期化（名前空間ごと）
                     if _k_pts not in st.session_state:
@@ -833,6 +830,18 @@ elif st.session_state.step == 2:
                         "2. **実寸を入力** … 下の「縮尺基準線の実長（m）」へ図面の数値を入力\n"
                         "3. **幅を測定** … ラベルを選ぶ（自由入力も可）→ 測りたい線を2点クリック"
                     )
+
+                    # ズーム倍率スライダー（拡大してクリック計測が可能）
+                    _zoom_pct = st.select_slider(
+                        "🔍 ズーム倍率（拡大してクリック計測できます）",
+                        options=[50, 75, 100, 150, 200, 300],
+                        value=100, key=f"{ns}_zoom",
+                        format_func=lambda x: f"{x}%",
+                    )
+                    _disp_w  = int(_base_w * _zoom_pct / 100)
+                    _scale_r = _orig_w / _disp_w
+                    _disp_h  = int(_orig_h / _scale_r)
+                    _pil_disp = _pil_orig.resize((_disp_w, _disp_h), Image.LANCZOS)
 
                     # クリック済みの線をプレビュー描画
                     _preview = _pil_disp.copy()
