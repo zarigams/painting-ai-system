@@ -253,6 +253,7 @@ DEFAULTS = {
         "show_account_settings": False,
         "_voice_gpt_raw": "",
         "_3d_gpt_raw": "",
+        "_3d_trace_png": None,
     "theme":                 "スタンダード",
 }
 for _k, _v in DEFAULTS.items():
@@ -1321,29 +1322,93 @@ elif st.session_state.step == 2:
                                     st.rerun()
                         # ── AI 3D変換 ──────────────────────────────────────
                         st.markdown("---")
-                        with st.expander("🏗 AI 3D変換（Beta）— GPT-4oが図面を読んで3Dモデルを生成", expanded=False):
-                            st.caption("図面画像をGPT-4o Visionに送信 → 壁・屋根・開口部を推定 → Three.jsで3D建物を表示。処理時間: 15〜30秒")
-                            if st.button("🔮 3D変換開始", type="primary", key="btn_3d_convert"):
-                                with st.spinner("GPT-4oが図面を解析中…（壁・屋根・窓の位置を推定しています）"):
-                                    try:
-                                        from core.building_3d_generator import analyze_drawing_3d, generate_building_3d_html
-                                        from modules.llm_client import _get_api_key
-                                        _api_key = _get_api_key()
-                                        _bldg_data = analyze_drawing_3d(drawing_img_bytes, _api_key)
-                                        if "error" in _bldg_data:
-                                            st.error(f"解析エラー: {_bldg_data['error']}")
-                                        else:
-                                            st.session_state["building_3d_data"] = _bldg_data
-                                            st.session_state["_3d_gpt_raw"] = _bldg_data.get("_raw_gpt_response", "")
-                                            st.success(f"解析完了: {_bldg_data.get('building_type','')} / {_bldg_data.get('note','')}")
-                                    except Exception as _e3d:
-                                        st.error(f"3D変換エラー: {_e3d}")
-                            _bdata = st.session_state.get("building_3d_data")
-                            if _bdata and "error" not in _bdata:
-                                from core.building_3d_generator import generate_building_3d_html
-                                _html3d = generate_building_3d_html(_bdata, canvas_height=600)
-                                import streamlit.components.v1 as _comp3d
-                                _comp3d.html(_html3d, height=620, scrolling=False)
+                        with st.expander("🏗 AI 3D変換（Beta）— 2段階パイプラインで精密3Dモデルを生成", expanded=False):
+                            _3d_mode_tab, _3d_result_tab = st.tabs(["⚙️ 解析方法", "🏠 3D表示"])
+
+                            with _3d_mode_tab:
+                                st.markdown("**方法を選んで実行してください**")
+                                _m1, _m2 = st.columns(2)
+
+                                with _m1:
+                                    st.markdown("##### 🔮 方法1: 図面直接解析")
+                                    st.caption("図面画像をそのままGPT-4oに送信。速い（15〜30秒）が精度は中程度。")
+                                    if st.button("🔮 直接解析を実行", key="btn_3d_direct"):
+                                        with st.spinner("GPT-4oが図面を直接解析中…"):
+                                            try:
+                                                from core.building_3d_generator import analyze_drawing_3d, generate_building_3d_html
+                                                from modules.llm_client import _get_api_key
+                                                _api_key = _get_api_key()
+                                                _bldg_data = analyze_drawing_3d(drawing_img_bytes, _api_key)
+                                                if "error" in _bldg_data:
+                                                    st.error(f"解析エラー: {_bldg_data['error']}")
+                                                else:
+                                                    st.session_state["building_3d_data"] = _bldg_data
+                                                    st.session_state["_3d_gpt_raw"] = _bldg_data.get("_raw_gpt_response", "")
+                                                    st.session_state["_3d_trace_png"] = None
+                                                    st.success(f"✅ 解析完了: {_bldg_data.get('building_type','')} / {_bldg_data.get('note','')}")
+                                            except Exception as _e3d:
+                                                st.error(f"エラー: {_e3d}")
+
+                                with _m2:
+                                    st.markdown("##### 🔬 方法2: 2段階精密解析（推奨）")
+                                    st.caption("**Stage1**: 線検出データからクリーントレースPNG生成  \n**Stage2**: トレース画像＋実寸データをGPTに送信 → 精密な建物構造を取得")
+                                    if not st.session_state.get("line_detect_result"):
+                                        st.warning("先に「🔍 線を検出する」を実行してください")
+                                    else:
+                                        if st.button("🔬 精密解析を実行", type="primary", key="btn_3d_trace"):
+                                            _ld2 = st.session_state["line_detect_result"]
+                                            with st.spinner("Stage1: クリーントレースPNG生成中…"):
+                                                try:
+                                                    from core.trace_analyzer import generate_clean_trace_png, analyze_trace_for_building
+                                                    from modules.llm_client import _get_api_key
+                                                    _trace_png = generate_clean_trace_png(
+                                                        lines=_ld2["lines"],
+                                                        scale_m_per_px=_ld2["scale_m_per_px"],
+                                                        canvas_w=900,
+                                                        min_length_m=0.3,
+                                                        show_grid=True,
+                                                    )
+                                                    st.session_state["_3d_trace_png"] = _trace_png
+                                                    st.success(f"Stage1完了: クリーントレース生成（検出線{len(_ld2['lines'])}本）")
+                                                except Exception as _e_s1:
+                                                    st.error(f"Stage1エラー: {_e_s1}")
+                                                    _trace_png = None
+
+                                            if st.session_state.get("_3d_trace_png"):
+                                                with st.spinner("Stage2: GPT-4oがトレースから建物要素を精密解析中…（20〜40秒）"):
+                                                    try:
+                                                        _api_key = _get_api_key()
+                                                        _bldg_data = analyze_trace_for_building(
+                                                            clean_png_bytes=st.session_state["_3d_trace_png"],
+                                                            lines=_ld2["lines"],
+                                                            scale_m_per_px=_ld2["scale_m_per_px"],
+                                                            api_key=_api_key,
+                                                        )
+                                                        if "error" in _bldg_data:
+                                                            st.error(f"Stage2エラー: {_bldg_data['error']}")
+                                                        else:
+                                                            st.session_state["building_3d_data"] = _bldg_data
+                                                            st.session_state["_3d_gpt_raw"] = _bldg_data.get("_raw_gpt_response", "")
+                                                            st.success(f"✅ Stage2完了: {_bldg_data.get('building_type','')} / {_bldg_data.get('note','')}")
+                                                    except Exception as _e_s2:
+                                                        st.error(f"Stage2エラー: {_e_s2}")
+
+                                # Stage1のクリーントレース表示
+                                if st.session_state.get("_3d_trace_png"):
+                                    st.markdown("**Stage1 出力: クリーントレースPNG（これをGPTに送信）**")
+                                    st.image(st.session_state["_3d_trace_png"], use_container_width=True)
+
+                            with _3d_result_tab:
+                                _bdata = st.session_state.get("building_3d_data")
+                                if _bdata and "error" not in _bdata:
+                                    _pipe = _bdata.get("_pipeline", "直接解析")
+                                    st.caption(f"使用パイプライン: {'🔬 2段階精密解析' if _pipe == 'trace_v2' else '🔮 直接解析'} | {_bdata.get('note','')}")
+                                    from core.building_3d_generator import generate_building_3d_html
+                                    _html3d = generate_building_3d_html(_bdata, canvas_height=600)
+                                    import streamlit.components.v1 as _comp3d
+                                    _comp3d.html(_html3d, height=620, scrolling=False)
+                                else:
+                                    st.info("「⚙️ 解析方法」タブで解析を実行すると3Dモデルがここに表示されます")
                     # ── クリック割り当てUI ────────────────────────
                     st.markdown("---")
                     st.markdown("### 🎯 線をクリックして項目に割り当て")
