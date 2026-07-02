@@ -73,7 +73,24 @@ def analyze_drawing_3d(img_bytes: bytes, api_key: str) -> dict:
         if img_bytes is None:
             return {"error": "図面画像がありません（drawing_raw_bytesがNone）", "_raw_gpt_response": ""}
         client = OpenAI(api_key=api_key)
-        b64 = base64.b64encode(img_bytes).decode("utf-8")
+        # PyMuPDF tobytes("png") が RGBA PNG を返す場合、GPTが拒否するため
+        # PIL で RGB JPEG に変換（最大1500px）してから送信する
+        img_mime = "image/png"
+        try:
+            from PIL import Image as _PILImg
+            import io as _io_inner
+            _pil = _PILImg.open(_io_inner.BytesIO(img_bytes)).convert("RGB")
+            w, h = _pil.size
+            if max(w, h) > 1500:
+                scale = 1500 / max(w, h)
+                _pil = _pil.resize((int(w * scale), int(h * scale)))
+            _jbuf = _io_inner.BytesIO()
+            _pil.save(_jbuf, format="JPEG", quality=88)
+            img_clean = _jbuf.getvalue()
+            img_mime = "image/jpeg"
+        except Exception:
+            img_clean = img_bytes  # PIL未インストール時はそのまま
+        b64 = base64.b64encode(img_clean).decode("utf-8")
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -82,7 +99,7 @@ def analyze_drawing_3d(img_bytes: bytes, api_key: str) -> dict:
                     "role": "user",
                     "content": [
                         {"type": "text", "text": _USER_PROMPT},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"}},
+                        {"type": "image_url", "image_url": {"url": f"data:{img_mime};base64,{b64}", "detail": "auto"}},
                     ],
                 },
             ],
@@ -126,6 +143,87 @@ def analyze_drawing_3d(img_bytes: bytes, api_key: str) -> dict:
         return {"error": f"JSONパースエラー: {e}\nfinish_reason={finish_reason}\nraw={repr(raw[:200])}", "_raw_gpt_response": raw}
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}", "_raw_gpt_response": raw}
+
+
+
+def build_3d_from_annotations(annotations: list, roof_type: str = "切妻") -> dict:
+    """
+    DrawingAnalyzerが抽出したannotationsから建物3Dデータを構築する。
+    GPTへの追加APIコール不要。STEP2の正確な抽出値を使用。
+
+    Parameters
+    ----------
+    annotations : DrawingAnalyzer.analyze_with_annotations() の annotations_list
+    roof_type   : 屋根タイプ（ユーザー選択）
+    """
+    if not annotations:
+        return {"error": "DrawingAnalyzerの解析データがありません。先にSTEP2の図面解析を実行してください。"}
+
+    widths  = [a for a in annotations if a.get("category") == "width"]
+    heights = [a for a in annotations if a.get("category") == "height"]
+
+    def _val(items, *keywords):
+        """ラベルにキーワードが含まれる最初の値を float で返す"""
+        for kw in keywords:
+            for item in items:
+                lbl = item.get("label", "")
+                if kw in lbl:
+                    try:
+                        return float(item["value"])
+                    except Exception:
+                        pass
+        return None
+
+    # 幅 (南面幅 > 東面幅 > 最大幅)
+    total_width = _val(widths, "南面幅", "南", "幅")
+    total_depth = _val(widths, "東面幅", "西面幅", "北面幅", "奥行")
+    if total_width is None and widths:
+        try:
+            total_width = max(float(w.get("value", 0) or 0) for w in widths)
+        except Exception:
+            pass
+    total_width = total_width or 10.0
+    total_depth = total_depth or round(total_width * 0.8, 2)
+
+    # 高さ
+    eave_height  = _val(heights, "軒高", "eave") or 5.5
+    ridge_height = _val(heights, "棟高", "ridge")
+    if ridge_height is None or ridge_height <= eave_height:
+        ridge_height = round(eave_height + 3.0, 2)
+
+    # noteにannotationsの主要値を記載
+    note_parts = []
+    for a in (widths + heights):
+        note_parts.append(f"{a.get('label','')}={a.get('value','')}{a.get('unit','m')}")
+    note = "DrawingAnalyzer抽出値: " + " / ".join(note_parts[:6])
+
+    return {
+        "building_type": "立面図",
+        "note": note,
+        "dimensions": {
+            "total_width":   total_width,
+            "total_depth":   total_depth,
+            "eave_height":   eave_height,
+            "ridge_height":  ridge_height,
+        },
+        "walls": [
+            {"label": "南壁", "x": 0,           "y": 0,           "z": 0, "width": total_width, "height": eave_height, "depth": 0.2},
+            {"label": "北壁", "x": 0,           "y": total_depth, "z": 0, "width": total_width, "height": eave_height, "depth": 0.2},
+            {"label": "西壁", "x": 0,           "y": 0,           "z": 0, "width": 0.2,         "height": eave_height, "depth": total_depth},
+            {"label": "東壁", "x": total_width, "y": 0,           "z": 0, "width": 0.2,         "height": eave_height, "depth": total_depth},
+        ],
+        "roof": {
+            "type":         roof_type,
+            "eave_height":  eave_height,
+            "ridge_height": ridge_height,
+        },
+        "openings": [],
+        "floors": [
+            {"label": "基礎", "x": 0, "y": 0, "z": -0.3, "width": total_width, "depth": total_depth, "height": 0.3}
+        ],
+        "_pipeline":          "annotations_v1",
+        "_raw_gpt_response":  f"DrawingAnalyzer annotations ({len(annotations)}件): {note}",
+    }
 
 
 def generate_building_3d_html(building: dict, canvas_height: int = 620) -> str:

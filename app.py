@@ -1391,9 +1391,25 @@ elif st.session_state.step == 2:
                                                         if "error" in _bldg_data:
                                                             st.error(f"Stage2エラー: {_bldg_data['error']}")
                                                         else:
+                                                            # DrawingAnalyzerの寸法でGPT推定値を補正
+                                                            _ann2 = st.session_state.get("drawing_annotations") or []
+                                                            if _ann2:
+                                                                from core.building_3d_generator import build_3d_from_annotations
+                                                                _ann_data = build_3d_from_annotations(_ann2)
+                                                                if "error" not in _ann_data:
+                                                                    # GPTが読んだ openings/walls はそのまま、寸法のみ補正
+                                                                    _dim_fix = _ann_data["dimensions"]
+                                                                    _bldg_data.setdefault("dimensions", {}).update(_dim_fix)
+                                                                    _bldg_data.setdefault("roof", {}).update({
+                                                                        "eave_height":  _dim_fix["eave_height"],
+                                                                        "ridge_height": _dim_fix["ridge_height"],
+                                                                    })
+                                                                    _bldg_data["note"] = f"{_bldg_data.get('note','')} ／ 寸法補正: {_ann_data['note']}"
+                                                                    _bldg_data["_pipeline"] = "trace_v2+annotations"
                                                             st.session_state["building_3d_data"] = _bldg_data
                                                             st.session_state["_3d_gpt_raw"] = _bldg_data.get("_raw_gpt_response", "")
-                                                            st.success(f"✅ Stage2完了: {_bldg_data.get('building_type','')} / {_bldg_data.get('note','')}")
+                                                            _corr_badge = " [寸法補正済]" if _ann2 else ""
+                                                            st.success(f"✅ Stage2完了{_corr_badge}: {_bldg_data.get('building_type','')} / {_bldg_data.get('note','')[:80]}")
                                                     except Exception as _e_s2:
                                                         st.error(f"Stage2エラー: {_e_s2}")
 
