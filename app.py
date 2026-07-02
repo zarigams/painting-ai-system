@@ -1339,13 +1339,16 @@ elif st.session_state.step == 2:
                                                 from modules.llm_client import _get_api_key
                                                 _api_key = _get_api_key()
                                                 _bldg_data = analyze_drawing_3d(drawing_raw_bytes, _api_key)
+                                                # 常にGPTの生応答をデバッグタブに保存
+                                                st.session_state["_3d_gpt_raw"] = _bldg_data.get("_raw_gpt_response", "")
                                                 if "error" in _bldg_data:
                                                     st.error(f"解析エラー: {_bldg_data['error']}")
+                                                    st.caption("💡 デバッグタブで GPT生応答を確認できます")
                                                 else:
                                                     st.session_state["building_3d_data"] = _bldg_data
-                                                    st.session_state["_3d_gpt_raw"] = _bldg_data.get("_raw_gpt_response", "")
                                                     st.session_state["_3d_trace_png"] = None
-                                                    st.success(f"✅ 解析完了: {_bldg_data.get('building_type','')} / {_bldg_data.get('note','')}")
+                                                    _pipeline_badge = " [直接解析]" if _bldg_data.get("_pipeline") == "direct_fallback" else ""
+                                                    st.success(f"✅ 解析完了{_pipeline_badge}: {_bldg_data.get('building_type','')} / {_bldg_data.get('note','')}")
                                             except Exception as _e3d:
                                                 st.error(f"エラー: {_e3d}")
 
@@ -1369,7 +1372,8 @@ elif st.session_state.step == 2:
                                                         show_grid=True,
                                                     )
                                                     st.session_state["_3d_trace_png"] = _trace_png
-                                                    st.success(f"Stage1完了: クリーントレース生成（検出線{len(_ld2['lines'])}本）")
+                                                    _filtered_cnt = len([l for l in _ld2["lines"] if l["real_m"] >= 1.5])
+                                                    st.success(f"Stage1完了: クリーントレース生成（構造線{_filtered_cnt}本 / 総検出{len(_ld2['lines'])}本）")
                                                 except Exception as _e_s1:
                                                     st.error(f"Stage1エラー: {_e_s1}")
                                                     _trace_png = None

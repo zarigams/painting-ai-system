@@ -64,11 +64,14 @@ _USER_PROMPT = """この建築図面を解析して、建物の3D形状を推定
 def analyze_drawing_3d(img_bytes: bytes, api_key: str) -> dict:
     """
     GPT-4o Vision で図面を解析して建物3Dデータを返す。
-    Returns: dict（エラー時は {"error": "..."} ）
+    Returns: dict（エラー時は {"error": "...", "_raw_gpt_response": "..."} ）
     """
     raw = ""
+    finish_reason = ""
     try:
         from openai import OpenAI
+        if img_bytes is None:
+            return {"error": "図面画像がありません（drawing_raw_bytesがNone）", "_raw_gpt_response": ""}
         client = OpenAI(api_key=api_key)
         b64 = base64.b64encode(img_bytes).decode("utf-8")
         response = client.chat.completions.create(
@@ -83,22 +86,46 @@ def analyze_drawing_3d(img_bytes: bytes, api_key: str) -> dict:
                     ],
                 },
             ],
-            max_tokens=2500,
+            max_tokens=3000,
             temperature=0.2,
         )
-        raw = response.choices[0].message.content.strip()
-        _raw_for_log = raw  # ログ用（markdownストリップ前）
+        finish_reason = response.choices[0].finish_reason or ""
+        raw_content = response.choices[0].message.content  # None チェック前
+        raw = (raw_content or "").strip()
+        _raw_for_log = f"[finish_reason={finish_reason}] {raw}"
+
+        if not raw:
+            # GPTが空を返した → デフォルト建物で3Dを出す
+            default = {
+                "building_type": "不明（GPT空応答）",
+                "note": f"GPTが空の応答を返しました(finish_reason={finish_reason})。デフォルト値を使用。",
+                "dimensions": {"total_width": 10, "total_depth": 8, "eave_height": 5.5, "ridge_height": 8.0},
+                "walls": [
+                    {"label": "南壁", "x": 0, "y": 0, "z": 0, "width": 10, "height": 5.5, "depth": 0.2},
+                    {"label": "北壁", "x": 0, "y": 8, "z": 0, "width": 10, "height": 5.5, "depth": 0.2},
+                    {"label": "西壁", "x": 0, "y": 0, "z": 0, "width": 0.2, "height": 5.5, "depth": 8},
+                    {"label": "東壁", "x": 10, "y": 0, "z": 0, "width": 0.2, "height": 5.5, "depth": 8},
+                ],
+                "roof": {"type": "切妻", "eave_height": 5.5, "ridge_height": 8.0},
+                "openings": [],
+                "floors": [{"label": "基礎", "x": 0, "y": 0, "z": -0.3, "width": 10, "depth": 8, "height": 0.3}],
+                "_raw_gpt_response": _raw_for_log,
+                "_pipeline": "direct_fallback",
+            }
+            return default
+
         if raw.startswith("```"):
-            raw = raw.split("```")[1]
+            parts = raw.split("```")
+            raw = parts[1] if len(parts) > 1 else raw
             if raw.startswith("json"):
                 raw = raw[4:]
         result = json.loads(raw.strip())
-        result["_raw_gpt_response"] = _raw_for_log  # ログ用
+        result["_raw_gpt_response"] = _raw_for_log
         return result
     except json.JSONDecodeError as e:
-        return {"error": f"JSONパースエラー: {e}", "raw": raw}
+        return {"error": f"JSONパースエラー: {e}\nfinish_reason={finish_reason}\nraw={repr(raw[:200])}", "_raw_gpt_response": raw}
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": f"{type(e).__name__}: {e}", "_raw_gpt_response": raw}
 
 
 def generate_building_3d_html(building: dict, canvas_height: int = 620) -> str:
@@ -183,7 +210,7 @@ function addBox(x,y,z,w,h,d,color,label,dimText){
 const dim=BUILDING.dimensions||{};
 const _BW=dim.total_width||10,_BD=dim.total_depth||8,_EH=dim.eave_height||3,_RH=dim.ridge_height||6;
 const BW=Math.min(_BW,40),BD=Math.min(_BD,40);
-const EH=Math.min(Math.max(_EH,2.0),8.0);
+const EH=Math.min(Math.max(_EH,2.0),6.5);  // 軒高クランプ: 2〜6.5m（住宅の実際範囲）
 const RH=Math.min(Math.max(_RH,EH+0.5),EH+5.0);
 const OX=-BW/2,OZ=-BD/2;
 const walls=BUILDING.walls||[];
