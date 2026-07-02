@@ -186,23 +186,33 @@ const roof=BUILDING.roof||{};
 const rEH=roof.eave_height||EH,rRH=roof.ridge_height||RH,rtype=roof.type||'切妻';
 if(rtype==='陸屋根'){addBox(OX-0.2,rEH,OZ-0.2,BW+0.4,0.3,BD+0.4,'#666666','屋根（陸屋根）',BW+'m × '+BD+'m');}
 else{
+  // 切妻屋根: 南面・北面スロープ（四角形＝三角形2枚）+ 東西妻面（三角形）
   const matR=new THREE.MeshLambertMaterial({color:0x445566,side:THREE.DoubleSide});
-  const addTri=(pts)=>{
+  const addQuad=(p1,p2,p3,p4,label,dimT)=>{
     const geo=new THREE.BufferGeometry();
-    geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pts),3));
+    const v=new Float32Array([
+      p1[0],p1[1],p1[2], p2[0],p2[1],p2[2], p3[0],p3[1],p3[2],
+      p1[0],p1[1],p1[2], p3[0],p3[1],p3[2], p4[0],p4[1],p4[2]]);
+    geo.setAttribute('position',new THREE.BufferAttribute(v,3));
     geo.computeVertexNormals();
     const m=new THREE.Mesh(geo,matR);
-    m.userData={label:'屋根（'+rtype+'）',dimText:'軒高'+rEH+'m 棟高'+rRH+'m'};
+    m.userData={label:label||'屋根',dimText:dimT||''};
     scene.add(m);clickable.push(m);};
-  addTri([OX,rEH,OZ, OX+BW,rEH,OZ, OX+BW/2,rRH,OZ+BD/2,
-          OX,rEH,OZ, OX+BW/2,rRH,OZ+BD/2, OX+BW,rEH,OZ]);
-  addTri([OX,rEH,OZ+BD, OX+BW/2,rRH,OZ+BD/2, OX+BW,rEH,OZ+BD,
-          OX,rEH,OZ+BD, OX+BW,rEH,OZ+BD, OX+BW/2,rRH,OZ+BD/2]);
-  const matT=new THREE.MeshLambertMaterial({color:0x334455,side:THREE.DoubleSide});
-  [OX,OX+BW].forEach(px=>{
+  const addTri3=(p1,p2,p3)=>{
     const geo=new THREE.BufferGeometry();
-    geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array([px,rEH,OZ, px,rEH,OZ+BD, px,rRH,OZ+BD/2]),3));
-    geo.computeVertexNormals();scene.add(new THREE.Mesh(geo,matT));});}
+    geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array([p1[0],p1[1],p1[2],p2[0],p2[1],p2[2],p3[0],p3[1],p3[2]]),3));
+    geo.computeVertexNormals();
+    scene.add(new THREE.Mesh(geo,new THREE.MeshLambertMaterial({color:0x334455,side:THREE.DoubleSide})));};
+  const roofLabel='屋根（'+rtype+'）',roofDim='軒高'+rEH+'m 棟高'+rRH+'m';
+  const midZ=OZ+BD/2;
+  // 南面スロープ: 南軒→棟
+  addQuad([OX,rEH,OZ],[OX+BW,rEH,OZ],[OX+BW,rRH,midZ],[OX,rRH,midZ],roofLabel,roofDim);
+  // 北面スロープ: 北軒→棟
+  addQuad([OX,rRH,midZ],[OX+BW,rRH,midZ],[OX+BW,rEH,OZ+BD],[OX,rEH,OZ+BD],roofLabel,roofDim);
+  // 西妻面
+  addTri3([OX,rEH,OZ],[OX,rEH,OZ+BD],[OX,rRH,midZ]);
+  // 東妻面
+  addTri3([OX+BW,rEH,OZ],[OX+BW,rRH,midZ],[OX+BW,rEH,OZ+BD]);}
 const openings=BUILDING.openings||[];
 openings.forEach(op=>{
   const col=op.type==='窓'?0x88ccff:op.type==='ドア'?0x886644:0x44aa88;

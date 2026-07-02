@@ -1013,17 +1013,21 @@ elif st.session_state.step == 2:
                         st.image(_ld["annotated_bytes"], use_container_width=True)
 
                     with _view_tab2:
-                        st.caption(
-                            "検出した線を実寸比率・実際の角度でトレース表示。"
-                            "H=水平 / V=垂直 / 数字=傾き角度（°）"
-                        )
-                        _trace_min = st.slider("最小表示長（m）", 0.3, 5.0, 1.0, step=0.1, key="trace_min_len")
+                        st.caption("実寸比率・実際の角度でトレース表示。H=水平 V=垂直 数字=傾き角度")
+                        _tc1, _tc2, _tc3 = st.columns([2,1,1])
+                        _trace_min = _tc1.slider("最小表示長（m）", 0.3, 5.0, 1.0, step=0.1, key="trace_min_len")
+                        _show_diag = _tc2.checkbox("斜め線を表示", value=True, key="trace_diag")
+                        _show_grid = _tc3.checkbox("グリッド（1m）", value=True, key="trace_grid")
+                        _group_blk  = st.checkbox("ブロック代表のみ（各ブロック最長1本）", value=False, key="trace_group")
                         from core.line_detector import generate_trace_svg
                         _svg = generate_trace_svg(
                             lines=_ld["lines"],
                             scale_m_per_px=_ld["scale_m_per_px"],
                             svg_width=860,
                             min_length_m=_trace_min,
+                            group_by_block=_group_blk,
+                            show_grid=_show_grid,
+                            show_diagonal=_show_diag,
                         )
                         st.markdown(_svg, unsafe_allow_html=True)
 
@@ -1066,6 +1070,9 @@ elif st.session_state.step == 2:
                             _blk_groups[str(_ll.get("id","?"))[0]].append(_ll)
                         if "_sel_line_id" not in st.session_state:
                             st.session_state["_sel_line_id"] = None
+                        if "_disabled_lines" not in st.session_state:
+                            st.session_state["_disabled_lines"] = set()
+                        _disabled = st.session_state["_disabled_lines"]
                         _col_tbl, _col_hl = st.columns([1, 1.4])
                         with _col_tbl:
                             st.markdown(f"**📋 線一覧（{len(_disp_lines)}本）— 行クリックで右に表示**")
@@ -1076,6 +1083,7 @@ elif st.session_state.step == 2:
                                 with st.expander(f"ブロック {_blk_letter}（{len(_blk_lines)}本）", expanded=_is_first):
                                     _blk_rows = [
                                         {
+                                            "✓使用": l["id"] not in _disabled,
                                             "線名": l["id"],
                                             "実寸(m)": l["real_m"],
                                             "向き": _orient_abbr.get(l["orientation"], ""),
@@ -1094,7 +1102,17 @@ elif st.session_state.step == 2:
                                     )
                                     _sr = _ev.selection.rows if hasattr(_ev, "selection") else []
                                     if _sr:
-                                        st.session_state["_sel_line_id"] = _blk_lines[_sr[0]].get("id")
+                                        _clicked_id = _blk_lines[_sr[0]].get("id")
+                                        st.session_state["_sel_line_id"] = _clicked_id
+                                        _tog1, _tog2 = st.columns(2)
+                                        if _clicked_id in _disabled:
+                                            if _tog1.button(f"✅ {_clicked_id} を有効化", key=f"en_{_blk_letter}_{_sr[0]}"):
+                                                _disabled.discard(_clicked_id)
+                                                st.rerun()
+                                        else:
+                                            if _tog2.button(f"🚫 {_clicked_id} を無効化", key=f"dis_{_blk_letter}_{_sr[0]}"):
+                                                _disabled.add(_clicked_id)
+                                                st.rerun()
                         with _col_hl:
                             _sel_id_now = st.session_state.get("_sel_line_id")
                             _sel_obj = next((l for l in _disp_lines if str(l.get("id")) == str(_sel_id_now)), None) if _sel_id_now else None
@@ -1106,6 +1124,26 @@ elif st.session_state.step == 2:
                             else:
                                 st.info("👈 左の表の行をクリックすると、ここに図面上でハイライト表示されます")
                                 st.image(_ld["annotated_bytes"], use_container_width=True, caption="図面（選択前）")
+                        # ── 基準長さ校正 ────────────────────────────────────
+                        st.markdown("---")
+                        with st.expander("📐 基準長さ校正（1辺の実寸がわかれば全線を再計算）", expanded=False):
+                            st.caption("図面上の任意の線を1本選び、実際の長さ(m)を入力すると縮尺を自動補正して全線を再計算します")
+                            _ref_id = st.selectbox(
+                                "基準にする線",
+                                [l["id"] for l in _ld["lines"]],
+                                key="ref_line_sel"
+                            )
+                            _ref_line = next((l for l in _ld["lines"] if l["id"] == _ref_id), None)
+                            if _ref_line:
+                                st.info(f"選択中: **{_ref_id}** — 現在の計算値 **{_ref_line['real_m']:.3f} m**")
+                                _ref_actual = st.number_input("この線の実際の長さ（m）", min_value=0.1, max_value=100.0, value=float(round(_ref_line["real_m"],1)), step=0.1, key="ref_actual_m")
+                                if st.button("🔄 全線を再計算", type="primary", key="btn_recalc_scale"):
+                                    _corr = _ref_actual / _ref_line["real_m"] if _ref_line["real_m"] > 0 else 1.0
+                                    for _ln in _ld["lines"]:
+                                        _ln["real_m"] = round(_ln["real_m"] * _corr, 3)
+                                    st.session_state["line_detect_result"]["scale_m_per_px"] = round(_ld["scale_m_per_px"] * _corr, 6)
+                                    st.success(f"補正係数 {_corr:.4f} を適用しました。全線の実寸を再計算しました。")
+                                    st.rerun()
                         # ── AI 3D変換 ──────────────────────────────────────
                         st.markdown("---")
                         with st.expander("🏗 AI 3D変換（Beta）— GPT-4oが図面を読んで3Dモデルを生成", expanded=False):

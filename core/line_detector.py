@@ -292,6 +292,8 @@ def generate_trace_svg(
     svg_width: int = 900,
     min_length_m: float = 0.5,
     group_by_block: bool = True,
+    show_grid: bool = True,
+    show_diagonal: bool = True,
 ) -> str:
     """
     検出した線分から、実寸比率で再現したSVGトレースを生成する。
@@ -312,7 +314,7 @@ def generate_trace_svg(
         return '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="100"><text x="10" y="50" font-size="16">検出線なし</text></svg>'
 
     # 描画対象フィルタ
-    draw_lines = [l for l in lines if l["real_m"] >= min_length_m]
+    draw_lines = [l for l in lines if l["real_m"] >= min_length_m and (show_diagonal or l["orientation"] != "diagonal")]
 
     # ブロックごとに最長1本だけ残す
     if group_by_block:
@@ -390,6 +392,30 @@ def generate_trace_svg(
             f'<text x="{mx+1:.1f}" y="{my:.1f}" font-size="11" fill="{col}" font-weight="bold">{lbl}</text>'
         )
 
+    # グリッド（実寸1m単位）
+    grid_svg = ""
+    if show_grid:
+        real_xs = [l["x1"] for l in draw_lines] + [l["x2"] for l in draw_lines]
+        real_ys = [l["y1"] for l in draw_lines] + [l["y2"] for l in draw_lines]
+        if real_xs and real_ys:
+            gx0, gx1 = min(real_xs), max(real_xs)
+            gy0, gy1 = min(real_ys), max(real_ys)
+            # 1m刻みの間隔(px)
+            step_px = 1.0 / scale_m_per_px if scale_m_per_px > 0 else 0
+            if 0 < step_px < (max(orig_w, orig_h) / 2):
+                # 垂直グリッド線
+                x = gx0
+                while x <= gx1 + step_px:
+                    sx = tx(x)
+                    grid_svg += f'<line x1="{sx:.1f}" y1="{margin}" x2="{sx:.1f}" y2="{margin+draw_h}" stroke="#ccc" stroke-width="0.4" stroke-dasharray="3,3" opacity="0.5"/>'
+                    x += step_px
+                # 水平グリッド線
+                y = gy0
+                while y <= gy1 + step_px:
+                    sy = ty(y)
+                    grid_svg += f'<line x1="{margin}" y1="{sy:.1f}" x2="{margin+draw_w}" y2="{sy:.1f}" stroke="#ccc" stroke-width="0.4" stroke-dasharray="3,3" opacity="0.5"/>'
+                    y += step_px
+
     # 凡例
     legend = (
         f'<text x="{margin}" y="{svg_h-35}" font-size="11" fill="#00aa33">■ 8m以上</text>'
@@ -403,6 +429,7 @@ def generate_trace_svg(
     svg = (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{svg_width}" height="{svg_h}" '
         f'style="background:#f8f8f8;border:1px solid #ddd">'
+        f'{grid_svg}'
         f'{"".join(lines_svg)}'
         f'{"".join(labels_svg)}'
         f'{legend}'
