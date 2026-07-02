@@ -131,6 +131,33 @@ def generate_clean_trace_png(
     return buf.getvalue()
 
 
+
+def _filter_structural_lines(lines: list, img_w: int = 0, img_h: int = 0, 
+                              min_m: float = 1.0, border_ratio: float = 0.03) -> list:
+    """
+    構造線のみを残すフィルタ。
+    - 端点が画像端 border_ratio 以内の線（外枠線）を除外
+    - min_m 未満の線を除外
+    """
+    bx = img_w * border_ratio if img_w else 0
+    by = img_h * border_ratio if img_h else 0
+    result = []
+    for ln in lines:
+        if ln['real_m'] < min_m:
+            continue
+        # 図面外枠チェック（両端が画像端に接している線）
+        if img_w and img_h:
+            x1, y1, x2, y2 = ln['x1'], ln['y1'], ln['x2'], ln['y2']
+            near_left  = x1 < bx and x2 < bx
+            near_right = x1 > img_w - bx and x2 > img_w - bx
+            near_top   = y1 < by and y2 < by
+            near_bottom = y1 > img_h - by and y2 > img_h - by
+            if near_left or near_right or near_top or near_bottom:
+                continue  # 外枠線を除外
+        result.append(ln)
+    return result
+
+
 # ── GPT プロンプト ────────────────────────────────────────────
 
 _SYSTEM = """あなたは建築図面を精密に読み取る専門家です。
@@ -193,8 +220,11 @@ _USER_TMPL = """## トレース画像の読み方
 
 ## 厳守ルール
 - 実寸は**必ずラベルの数値を使う**（例: `A1 9.10m H` → 幅9.10m）
-- 最長の水平線群 → 建物の幅
-- 最長の垂直線群 → 建物の高さ（軒高）
+- **最長線が画像全体を横断する（幅の95%以上）場合は図面外枠→無視すること**
+- 建物の幅（水平）: 複数の同じ長さの水平線が上下に並んでいる長さ
+- 建物の軒高（垂直）: **必ず2.5m〜8.0mの範囲**（住宅の物理的制約）
+  - 平屋: 2.5〜3.5m / 2階建て: 4.5〜6.5m / 3階建て: 7.0〜8.0m
+  - この範囲外の垂直線長は外枠・寸法線なので建物高さに使わないこと
 - 青い水平線が縦にグループ化している領域 → 窓の候補
 - openings の z = 床面からの高さ（1階腰窓=0.9、掃出窓=0、ドア=0、2階窓=3.5）
 - floors の color フィールドは省略
@@ -230,8 +260,17 @@ def analyze_trace_for_building(
         from openai import OpenAI
         client = OpenAI(api_key=api_key)
 
+        # 構造線のみにフィルタリング（外枠除外 + min 1.0m以上）
+        # img_w/img_h を lines の座標から推定
+        all_xs = [l['x1'] for l in lines] + [l['x2'] for l in lines]
+        all_ys = [l['y1'] for l in lines] + [l['y2'] for l in lines]
+        _img_w = max(all_xs) if all_xs else 0
+        _img_h = max(all_ys) if all_ys else 0
+        structural = _filter_structural_lines(lines, img_w=_img_w, img_h=_img_h, min_m=1.0)
+        if len(structural) < 5:  # フィルタ過多の場合はフォールバック
+            structural = [l for l in lines if l['real_m'] >= 0.5]
         # 上位N本（実寸降順）の線データ
-        key_lines = sorted(lines, key=lambda x: x["real_m"], reverse=True)[:top_n]
+        key_lines = sorted(structural, key=lambda x: x["real_m"], reverse=True)[:top_n]
         lines_data = [
             {
                 "id": l.get("id", ""),

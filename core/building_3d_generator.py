@@ -181,7 +181,10 @@ function addBox(x,y,z,w,h,d,color,label,dimText){
   mesh.add(new THREE.LineSegments(edges,new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:0.2})));
   clickable.push(mesh);return mesh;}
 const dim=BUILDING.dimensions||{};
-const BW=dim.total_width||10,BD=dim.total_depth||8,EH=dim.eave_height||3,RH=dim.ridge_height||6;
+const _BW=dim.total_width||10,_BD=dim.total_depth||8,_EH=dim.eave_height||3,_RH=dim.ridge_height||6;
+const BW=Math.min(_BW,40),BD=Math.min(_BD,40);
+const EH=Math.min(Math.max(_EH,2.0),8.0);
+const RH=Math.min(Math.max(_RH,EH+0.5),EH+5.0);
 const OX=-BW/2,OZ=-BD/2;
 const walls=BUILDING.walls||[];
 if(walls.length===0){
@@ -199,7 +202,7 @@ const floors=BUILDING.floors||[];
 if(floors.length===0){addBox(OX,-0.3,OZ,BW,0.3,BD,'#888888','基礎',BW+'m × '+BD+'m');}
 else{floors.forEach(f=>{addBox(OX+(f.x||0),(f.z||-0.3),OZ+(f.y||0),f.width||BW,f.height||0.3,f.depth||BD,'#888888',f.label||'基礎','');});}  // 色はGPT任せにせず固定
 const roof=BUILDING.roof||{};
-const rEH=roof.eave_height||EH,rRH=roof.ridge_height||RH,rtype=roof.type||'切妻';
+const rEH=roof.eave_height||EH;const _rRH_raw=roof.ridge_height||RH;const rRH=_rRH_raw>rEH?_rRH_raw:rEH+2.5;const rtype=roof.type||'切妻';
 if(rtype==='陸屋根'){addBox(OX-0.2,rEH,OZ-0.2,BW+0.4,0.3,BD+0.4,'#666666','屋根（陸屋根）',BW+'m × '+BD+'m');}
 else{
   const matR=new THREE.MeshLambertMaterial({color:0x445566,side:THREE.DoubleSide});

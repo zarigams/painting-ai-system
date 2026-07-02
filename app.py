@@ -1338,7 +1338,7 @@ elif st.session_state.step == 2:
                                                 from core.building_3d_generator import analyze_drawing_3d, generate_building_3d_html
                                                 from modules.llm_client import _get_api_key
                                                 _api_key = _get_api_key()
-                                                _bldg_data = analyze_drawing_3d(drawing_img_bytes, _api_key)
+                                                _bldg_data = analyze_drawing_3d(drawing_raw_bytes, _api_key)
                                                 if "error" in _bldg_data:
                                                     st.error(f"解析エラー: {_bldg_data['error']}")
                                                 else:
@@ -1365,7 +1365,7 @@ elif st.session_state.step == 2:
                                                         lines=_ld2["lines"],
                                                         scale_m_per_px=_ld2["scale_m_per_px"],
                                                         canvas_w=900,
-                                                        min_length_m=0.3,
+                                                        min_length_m=1.5,
                                                         show_grid=True,
                                                     )
                                                     st.session_state["_3d_trace_png"] = _trace_png
