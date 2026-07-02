@@ -74,11 +74,14 @@ def analyze_drawing_3d(img_bytes: bytes, api_key: str) -> dict:
             temperature=0.2,
         )
         raw = response.choices[0].message.content.strip()
+        _raw_for_log = raw  # ログ用（markdownストリップ前）
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
-        return json.loads(raw.strip())
+        result = json.loads(raw.strip())
+        result["_raw_gpt_response"] = _raw_for_log  # ログ用
+        return result
     except json.JSONDecodeError as e:
         return {"error": f"JSONパースエラー: {e}", "raw": raw}
     except Exception as e:

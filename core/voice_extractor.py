@@ -106,6 +106,7 @@ def _extract_raw(voice_text: str, llm, custom_rules: str = "") -> dict:
     raw = json.loads(text)
     merged = dict(_RAW_DEFAULTS)
     merged.update({k: v for k, v in raw.items() if k in _RAW_DEFAULTS})
+    merged["_gpt_raw_text"] = text  # ログ用
     return merged
 
 
@@ -173,6 +174,7 @@ def build_quantities(raw: dict) -> dict:
 
 def extract_quantities(voice_text: str, llm, custom_rules: str = "") -> dict:
     raw = _extract_raw(voice_text, llm, custom_rules=custom_rules)
+    _gpt_raw_text = raw.pop("_gpt_raw_text", "")  # ログ用（build_quantities には渡さない）
     quantities = build_quantities(raw)
     extras = {
         "client_name":  raw.get("client_name"),
@@ -181,4 +183,4 @@ def extract_quantities(voice_text: str, llm, custom_rules: str = "") -> dict:
         "floors":       raw.get("floors"),
         "wall_type":    raw.get("wall_type"),
     }
-    return {"quantities": quantities, "raw": raw, "extras": extras}
+    return {"quantities": quantities, "raw": raw, "extras": extras, "_gpt_raw_text": _gpt_raw_text}

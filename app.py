@@ -251,6 +251,8 @@ DEFAULTS = {
     "unit_prices":           {},
     "show_price_settings":   False,
         "show_account_settings": False,
+        "_voice_gpt_raw": "",
+        "_3d_gpt_raw": "",
     "theme":                 "スタンダード",
 }
 for _k, _v in DEFAULTS.items():
@@ -798,6 +800,7 @@ elif st.session_state.step == 2:
                         quantities = result["quantities"]
                         extras     = result["extras"]
                         raw        = result["raw"]
+                        st.session_state["_voice_gpt_raw"] = result.get("_gpt_raw_text", "")
                     else:
                         # 音声なし（図面/写真のみ）→ 経験則のベース dict から開始
                         quantities = build_quantities({})
@@ -1331,6 +1334,7 @@ elif st.session_state.step == 2:
                                             st.error(f"解析エラー: {_bldg_data['error']}")
                                         else:
                                             st.session_state["building_3d_data"] = _bldg_data
+                                            st.session_state["_3d_gpt_raw"] = _bldg_data.get("_raw_gpt_response", "")
                                             st.success(f"解析完了: {_bldg_data.get('building_type','')} / {_bldg_data.get('note','')}")
                                     except Exception as _e3d:
                                         st.error(f"3D変換エラー: {_e3d}")
@@ -2270,21 +2274,52 @@ elif st.session_state.step == 4:
             st.rerun()
 
     # ── デバッグ ─────────────────────────────────────────────
-    with st.expander("🔍 デバッグ情報"):
-        st.json(estimation)
-        st.markdown("**図面解析 生データ（GPT-4o返答）**")
-        drawing_dbg = st.session_state.get("drawing_data", {})
-        ann_count = drawing_dbg.get("_annotations_count", "未実行")
-        raw_resp  = drawing_dbg.get("_raw_gpt_response", "")
-        st.metric("annotations 取得件数", ann_count)
-        if raw_resp:
-            st.markdown("**GPT-4o 生テキスト（JSONパース前）**")
-            st.code(raw_resp, language="json")
-        else:
-            st.info("図面解析未実行 or 生テキスト未取得")
-        draw_err = drawing_dbg.get("_draw_error")
-        if draw_err:
-            st.error(f"マーカー描画エラー: {draw_err}")
-        st.markdown("**パース済みデータ**")
-        st.json({k: v for k, v in drawing_dbg.items()
-                 if not k.startswith("_raw")})
+    with st.expander("🔍 デバッグ情報（GPTログ）"):
+        _dbg_tab1, _dbg_tab2, _dbg_tab3, _dbg_tab4 = st.tabs(
+            ["📐 図面解析", "🎤 音声抽出", "🏠 3D解析", "📊 積算結果"])
+
+        with _dbg_tab1:
+            st.markdown("**図面解析 生データ（GPT-4o返答）**")
+            drawing_dbg = st.session_state.get("drawing_data", {})
+            ann_count = drawing_dbg.get("_annotations_count", "未実行")
+            raw_resp  = drawing_dbg.get("_raw_gpt_response", "")
+            st.metric("annotations 取得件数", ann_count)
+            if raw_resp:
+                st.markdown("**GPT-4o 生テキスト（JSONパース前）**")
+                st.code(raw_resp, language="json")
+            else:
+                st.info("図面解析未実行 or 生テキスト未取得")
+            draw_err = drawing_dbg.get("_draw_error")
+            if draw_err:
+                st.error(f"マーカー描画エラー: {draw_err}")
+            st.markdown("**パース済みデータ**")
+            st.json({k: v for k, v in drawing_dbg.items()
+                     if not k.startswith("_raw")})
+
+        with _dbg_tab2:
+            st.markdown("**音声抽出 GPT-4o 生テキスト**")
+            _voice_raw = st.session_state.get("_voice_gpt_raw", "")
+            if _voice_raw:
+                st.code(_voice_raw, language="json")
+            else:
+                st.info("音声抽出未実行")
+            _vr = st.session_state.get("voice_raw", {})
+            if _vr:
+                st.markdown("**パース済みRAW dict**")
+                st.json(_vr)
+
+        with _dbg_tab3:
+            st.markdown("**3D解析 GPT-4o 生テキスト**")
+            _3d_raw = st.session_state.get("_3d_gpt_raw", "")
+            if _3d_raw:
+                st.code(_3d_raw, language="json")
+            else:
+                st.info("3D解析未実行")
+            _3d_data = st.session_state.get("building_3d_data", {})
+            if _3d_data:
+                st.markdown("**パース済み建物データ**")
+                st.json({k: v for k, v in _3d_data.items()
+                         if not k.startswith("_raw")})
+
+        with _dbg_tab4:
+            st.json(estimation)
