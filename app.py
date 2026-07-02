@@ -250,6 +250,7 @@ DEFAULTS = {
     "extra_options":     {},
     "unit_prices":           {},
     "show_price_settings":   False,
+        "show_account_settings": False,
     "theme":                 "スタンダード",
 }
 for _k, _v in DEFAULTS.items():
@@ -309,6 +310,9 @@ with st.sidebar:
 
     if st.button("💰 単価設定", use_container_width=True, key="open_price_settings"):
         st.session_state.show_price_settings = not st.session_state.get("show_price_settings", False)
+
+    if st.button("⚙️ アカウント設定", use_container_width=True, key="open_account_settings"):
+        st.session_state.show_account_settings = not st.session_state.get("show_account_settings", False)
 
     with st.expander("📋 過去の案件"):
         from core.estimate_storage import list_estimates as _list_est, load_estimate as _load_est
@@ -416,6 +420,137 @@ if st.session_state.get("show_price_settings", False):
         if st.button("✕ キャンセル", use_container_width=True):
             st.session_state.show_price_settings = False
             st.rerun()
+    st.stop()
+
+# ─── アカウント設定画面 ────────────────────────────────────────
+if st.session_state.get("show_account_settings", False):
+    st.header("⚙️ アカウント設定")
+    from core.auth import (
+        get_company, update_company_info, change_password,
+        list_companies, add_company,
+    )
+
+    _cid = st.session_state.company_id
+    _cdata = get_company(_cid) or {}
+    _is_admin = _cdata.get("is_admin", False) or _cid == "admin"
+
+    # ── 会社情報編集 ──────────────────────────────────────────
+    st.subheader("🏢 会社情報")
+    with st.form("company_info_form"):
+        _ci1, _ci2 = st.columns(2)
+        _new_name  = _ci1.text_input("会社名",   value=_cdata.get("company_name", ""))
+        _new_dept  = _ci2.text_input("部署",     value=_cdata.get("department", ""))
+        _new_cont  = _ci1.text_input("担当者名", value=_cdata.get("contact_name", ""))
+        _new_tel   = _ci2.text_input("TEL",      value=_cdata.get("tel", ""))
+        _new_fax   = _ci1.text_input("FAX",      value=_cdata.get("fax", ""))
+        _new_addr  = st.text_input("住所",       value=_cdata.get("address", ""))
+        _save_info = st.form_submit_button("💾 会社情報を保存", type="primary", use_container_width=True)
+        if _save_info:
+            update_company_info(_cid, {
+                "company_name": _new_name,
+                "department":   _new_dept,
+                "contact_name": _new_cont,
+                "tel":          _new_tel,
+                "fax":          _new_fax,
+                "address":      _new_addr,
+            })
+            st.success("✅ 会社情報を保存しました")
+
+    st.markdown("---")
+
+    # ── パスワード変更 ────────────────────────────────────────
+    st.subheader("🔑 パスワード変更")
+    with st.form("change_pw_form"):
+        _old_pw  = st.text_input("現在のパスワード", type="password")
+        _new_pw  = st.text_input("新しいパスワード", type="password")
+        _new_pw2 = st.text_input("新しいパスワード（確認）", type="password")
+        _chg_pw  = st.form_submit_button("🔑 変更する", type="primary", use_container_width=True)
+        if _chg_pw:
+            if not _old_pw or not _new_pw:
+                st.error("全フィールドを入力してください")
+            elif _new_pw != _new_pw2:
+                st.error("新しいパスワードが一致しません")
+            elif len(_new_pw) < 4:
+                st.error("パスワードは4文字以上にしてください")
+            else:
+                if change_password(_cid, _old_pw, _new_pw):
+                    st.success("✅ パスワードを変更しました")
+                else:
+                    st.error("現在のパスワードが間違っています")
+
+    # ── 管理者専用セクション ──────────────────────────────────
+    if _is_admin:
+        st.markdown("---")
+        st.subheader("🔐 管理者専用")
+
+        # アカウント一覧
+        _companies = list_companies()
+        st.markdown(f"**登録会社一覧（{len(_companies)}社）**")
+        import pandas as pd
+        _rows = [
+            {
+                "会社ID":    c["id"],
+                "会社名":    c.get("company_name", ""),
+                "担当者":    c.get("contact_name", ""),
+                "TEL":       c.get("tel", ""),
+                "作成日":    c.get("created_at", "")[:10] if c.get("created_at") else "",
+                "管理者":    "✅" if c.get("is_admin") else "",
+            }
+            for c in _companies
+        ]
+        st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
+
+        # パスワードリセット
+        st.markdown("**パスワードリセット（強制変更）**")
+        with st.form("reset_pw_form"):
+            _all_ids = [c["id"] for c in _companies]
+            _target_id  = st.selectbox("対象アカウント", _all_ids, key="admin_reset_target")
+            _reset_pw   = st.text_input("新しいパスワード", type="password", key="admin_reset_pw")
+            _reset_btn  = st.form_submit_button("🔑 強制リセット", use_container_width=True)
+            if _reset_btn:
+                if not _reset_pw or len(_reset_pw) < 4:
+                    st.error("4文字以上のパスワードを入力してください")
+                else:
+                    import hashlib
+                    from core.auth import _load_accounts, _save_accounts, _hash_password
+                    _d = _load_accounts()
+                    for _c in _d["companies"]:
+                        if _c["id"] == _target_id:
+                            _c["password_hash"] = _hash_password(_reset_pw)
+                            _save_accounts(_d)
+                            st.success(f"✅ {_target_id} のパスワードをリセットしました")
+                            break
+
+        # 新規アカウント追加
+        st.markdown("---")
+        st.markdown("**新規アカウント追加**")
+        with st.form("add_company_form"):
+            _na1, _na2 = st.columns(2)
+            _new_id    = _na1.text_input("会社ID（英数字）")
+            _new_cname = _na2.text_input("会社名")
+            _init_pw   = _na1.text_input("初期パスワード", type="password")
+            _new_admin = _na2.checkbox("管理者権限を付与")
+            _add_btn   = st.form_submit_button("➕ 追加する", type="primary", use_container_width=True)
+            if _add_btn:
+                if not _new_id or not _new_cname or not _init_pw:
+                    st.error("全フィールドを入力してください")
+                elif len(_init_pw) < 4:
+                    st.error("パスワードは4文字以上にしてください")
+                else:
+                    _ok = add_company(
+                        _new_id, _new_cname, _init_pw,
+                        is_admin=_new_admin,
+                    )
+                    if _ok:
+                        st.success(f"✅ {_new_id}（{_new_cname}）を追加しました")
+                        st.rerun()
+                    else:
+                        st.error(f"ID「{_new_id}」は既に存在します")
+
+    st.markdown("---")
+    if st.button("✕ 閉じる", use_container_width=True, key="close_account_settings"):
+        st.session_state.show_account_settings = False
+        st.rerun()
     st.stop()
 
 
