@@ -1536,6 +1536,35 @@ elif st.session_state.step == 2:
                 st.session_state.face_inputs = make_empty_face_inputs()
             fi = st.session_state.face_inputs
 
+            # --- 屋根面積 自動分配 UI ---
+            _geo_for_auto = st.session_state.get("geo_result", {})
+            if _geo_for_auto and not _geo_for_auto.get("error"):
+                _total_roof = _geo_for_auto.get("roof_area_m2", 0)
+                if _total_roof and _total_roof > 0:
+                    st.markdown(
+                        f"**📐 幾何計算の屋根面積: {_total_roof} ㎡**  →  形状を選んで各面に自動入力できます"
+                    )
+                    _rc1, _rc2 = st.columns([3, 2])
+                    _roof_shape = _rc1.selectbox(
+                        "屋根形状",
+                        ["切妻（南北棟）", "切妻（東西棟）", "寄棟", "片流れ（南）", "片流れ（北）", "片流れ（東）", "片流れ（西）"],
+                        key="roof_shape_sel",
+                        label_visibility="collapsed",
+                    )
+                    if _rc2.button("🔄 屋根面積を自動入力", use_container_width=True, key="auto_roof_btn"):
+                        from core.drawing_calc import distribute_roof_area as _dist_roof
+                        _dist = _dist_roof(_total_roof, _geo_for_auto, _roof_shape)
+                        for _fk in ["east", "west", "south", "north"]:
+                            fi[_fk]["roof_m2"] = _dist[_fk]
+                        st.session_state.face_inputs = fi
+                        st.success(
+                            f"✅ {_total_roof}㎡ を分配しました — "
+                            + " / ".join(f"{v}㎡" for v in [_dist['south'], _dist['north'], _dist['east'], _dist['west']])
+                            + "（南/北/東/西）"
+                        )
+                        st.rerun()
+                    st.markdown("---")
+
             # --- 入力テーブル（タブで面を切り替え） ---
             tabs_fi = st.tabs(["東面", "西面", "南面", "北面"])
             face_keys = ["east", "west", "south", "north"]

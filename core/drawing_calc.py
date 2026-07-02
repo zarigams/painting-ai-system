@@ -139,3 +139,67 @@ def pixel_to_meter(known_px: float, known_m: float, target_px: float) -> float:
     if known_px <= 0:
         return 0.0
     return round(known_m / known_px * target_px, 3)
+
+
+def distribute_roof_area(
+    roof_area_m2: float,
+    geo: dict,
+    roof_shape: str = "寄棟",
+) -> dict:
+    """
+    屋根総面積を各面に分配する。
+
+    Parameters
+    ----------
+    roof_area_m2 : calc_geometry_4face() の roof_area_m2
+    geo          : calc_geometry_4face() の戻り値
+    roof_shape   : "切妻（南北棟）" / "切妻（東西棟）" / "寄棟"
+                   / "片流れ（南）" / "片流れ（北）" / "片流れ（東）" / "片流れ（西）"
+
+    Returns
+    -------
+    dict : {"east": float, "west": float, "south": float, "north": float}
+    """
+    s_w = geo.get("south_width_m", 1.0)
+    n_w = geo.get("north_width_m", s_w)
+    e_w = geo.get("east_width_m",  1.0)
+    w_w = geo.get("west_width_m",  e_w)
+
+    angle_deg = geo.get("angle_deg", 20.0)
+    cos_a = max(math.cos(math.radians(angle_deg)), 0.001)
+
+    if roof_shape == "切妻（南北棟）":
+        # 棟がEW方向 → 南・北 2 面だけ
+        avg_ew = geo.get("avg_ew_m", (e_w + w_w) / 2)
+        s_area = round(avg_ew * (s_w / 2) / cos_a, 2)
+        n_area = round(avg_ew * (n_w / 2) / cos_a, 2)
+        return {"south": s_area, "north": n_area, "east": 0.0, "west": 0.0}
+
+    elif roof_shape == "切妻（東西棟）":
+        # 棟がNS方向 → 東・西 2 面だけ
+        avg_ns = geo.get("avg_ns_m", (s_w + n_w) / 2)
+        e_area = round(avg_ns * (e_w / 2) / cos_a, 2)
+        w_area = round(avg_ns * (w_w / 2) / cos_a, 2)
+        return {"south": 0.0, "north": 0.0, "east": e_area, "west": w_area}
+
+    elif roof_shape.startswith("片流れ"):
+        # 1 面に全量
+        face_map = {"南": "south", "北": "north", "東": "east", "西": "west"}
+        face_char = roof_shape.split("（")[-1].rstrip("）") if "（" in roof_shape else "南"
+        f = face_map.get(face_char, "south")
+        result = {"south": 0.0, "north": 0.0, "east": 0.0, "west": 0.0}
+        result[f] = round(roof_area_m2, 2)
+        return result
+
+    else:
+        # 寄棟 or その他 → 全 4 面に外周幅の比で分配
+        total_w = s_w + n_w + e_w + w_w
+        if total_w <= 0:
+            each = round(roof_area_m2 / 4, 2)
+            return {"south": each, "north": each, "east": each, "west": each}
+        return {
+            "south": round(roof_area_m2 * s_w / total_w, 2),
+            "north": round(roof_area_m2 * n_w / total_w, 2),
+            "east":  round(roof_area_m2 * e_w / total_w, 2),
+            "west":  round(roof_area_m2 * w_w / total_w, 2),
+        }
