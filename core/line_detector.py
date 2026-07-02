@@ -126,7 +126,7 @@ def detect_lines_with_lengths(
     lines_info = []
     if raw is not None:
         for seg in raw:
-            x1, y1, x2, y2 = seg[0]
+            x1, y1, x2, y2 = seg.flatten()[:4]
             px_len = math.hypot(x2 - x1, y2 - y1)
             real_m = px_len * m_per_px
 
