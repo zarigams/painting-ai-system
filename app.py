@@ -1331,26 +1331,47 @@ elif st.session_state.step == 2:
 
                                 with _m1:
                                     st.markdown("##### 🔮 方法1: 図面直接解析")
-                                    st.caption("図面画像をそのままGPT-4oに送信。速い（15〜30秒）が精度は中程度。")
+                                    _m1_ann = st.session_state.get("drawing_annotations") or []
+                                    if _m1_ann:
+                                        st.caption("✅ 図面の寸法データ取得済み。屋根タイプを選んで実行。")
+                                        _m1_roof = st.selectbox("屋根タイプ", ["寄棟", "切妻", "片流れ", "陸屋根"], key="m1_roof_sel")
+                                    else:
+                                        st.caption("図面画像をそのままGPT-4oに送信。速い（15〜30秒）が精度は中程度。")
                                     if st.button("🔮 直接解析を実行", key="btn_3d_direct"):
-                                        with st.spinner("GPT-4oが図面を直接解析中…"):
+                                        if _m1_ann:
+                                            # DrawingAnalyzerの抽出値を直接使用（GPTコール不要）
                                             try:
-                                                from core.building_3d_generator import analyze_drawing_3d, generate_building_3d_html
-                                                from modules.llm_client import _get_api_key
-                                                _api_key = _get_api_key()
-                                                _bldg_data = analyze_drawing_3d(drawing_raw_bytes, _api_key)
-                                                # 常にGPTの生応答をデバッグタブに保存
-                                                st.session_state["_3d_gpt_raw"] = _bldg_data.get("_raw_gpt_response", "")
+                                                from core.building_3d_generator import build_3d_from_annotations
+                                                _m1_roof_sel = st.session_state.get("m1_roof_sel", "寄棟")
+                                                _bldg_data = build_3d_from_annotations(_m1_ann, roof_type=_m1_roof_sel)
                                                 if "error" in _bldg_data:
                                                     st.error(f"解析エラー: {_bldg_data['error']}")
-                                                    st.caption("💡 デバッグタブで GPT生応答を確認できます")
                                                 else:
                                                     st.session_state["building_3d_data"] = _bldg_data
                                                     st.session_state["_3d_trace_png"] = None
-                                                    _pipeline_badge = " [直接解析]" if _bldg_data.get("_pipeline") == "direct_fallback" else ""
-                                                    st.success(f"✅ 解析完了{_pipeline_badge}: {_bldg_data.get('building_type','')} / {_bldg_data.get('note','')}")
+                                                    st.session_state["_3d_gpt_raw"] = ""
+                                                    st.success(f"✅ 解析完了 [寸法値使用]: {_bldg_data.get('note','')}")
                                             except Exception as _e3d:
                                                 st.error(f"エラー: {_e3d}")
+                                        else:
+                                            with st.spinner("GPT-4oが図面を直接解析中…"):
+                                                try:
+                                                    from core.building_3d_generator import analyze_drawing_3d, generate_building_3d_html
+                                                    from modules.llm_client import _get_api_key
+                                                    _api_key = _get_api_key()
+                                                    _bldg_data = analyze_drawing_3d(drawing_raw_bytes, _api_key)
+                                                    # 常にGPTの生応答をデバッグタブに保存
+                                                    st.session_state["_3d_gpt_raw"] = _bldg_data.get("_raw_gpt_response", "")
+                                                    if "error" in _bldg_data:
+                                                        st.error(f"解析エラー: {_bldg_data['error']}")
+                                                        st.caption("💡 デバッグタブで GPT生応答を確認できます")
+                                                    else:
+                                                        st.session_state["building_3d_data"] = _bldg_data
+                                                        st.session_state["_3d_trace_png"] = None
+                                                        _pipeline_badge = " [直接解析]" if _bldg_data.get("_pipeline") == "direct_fallback" else ""
+                                                        st.success(f"✅ 解析完了{_pipeline_badge}: {_bldg_data.get('building_type','')} / {_bldg_data.get('note','')}")
+                                                except Exception as _e3d:
+                                                    st.error(f"エラー: {_e3d}")
 
                                 with _m2:
                                     st.markdown("##### 🔬 方法2: 2段階精密解析（推奨）")
@@ -1397,13 +1418,22 @@ elif st.session_state.step == 2:
                                                                 from core.building_3d_generator import build_3d_from_annotations
                                                                 _ann_data = build_3d_from_annotations(_ann2)
                                                                 if "error" not in _ann_data:
-                                                                    # GPTが読んだ openings/walls はそのまま、寸法のみ補正
                                                                     _dim_fix = _ann_data["dimensions"]
+                                                                    # ★補正前の幅を保存（openingsスケーリング用）
+                                                                    _old_w = float((_bldg_data.get("dimensions") or {}).get("total_width") or 1)
+                                                                    _new_w = float(_dim_fix.get("total_width") or 1)
+                                                                    _scale_r = _new_w / _old_w if _old_w > 0.01 else 1.0
+                                                                    # 寸法補正（幅・奥行・軒高・棟高）
                                                                     _bldg_data.setdefault("dimensions", {}).update(_dim_fix)
                                                                     _bldg_data.setdefault("roof", {}).update({
                                                                         "eave_height":  _dim_fix["eave_height"],
                                                                         "ridge_height": _dim_fix["ridge_height"],
                                                                     })
+                                                                    # ★GPT壁はwrong寸法のためクリア→JSが補正BW/BD/EHで4面自動生成
+                                                                    _bldg_data["walls"] = []
+                                                                    # ★openings x座標を新幅にスケーリング補正
+                                                                    for _op in (_bldg_data.get("openings") or []):
+                                                                        _op["x"] = round(float(_op.get("x") or 0) * _scale_r, 2)
                                                                     _bldg_data["note"] = f"{_bldg_data.get('note','')} ／ 寸法補正: {_ann_data['note']}"
                                                                     _bldg_data["_pipeline"] = "trace_v2+annotations"
                                                             st.session_state["building_3d_data"] = _bldg_data
@@ -1422,7 +1452,13 @@ elif st.session_state.step == 2:
                                 _bdata = st.session_state.get("building_3d_data")
                                 if _bdata and "error" not in _bdata:
                                     _pipe = _bdata.get("_pipeline", "直接解析")
-                                    st.caption(f"使用パイプライン: {'🔬 2段階精密解析' if _pipe == 'trace_v2' else '🔮 直接解析'} | {_bdata.get('note','')}")
+                                    _pipe_label = {
+                                        "trace_v2": "🔬 2段階精密解析",
+                                        "trace_v2+annotations": "🔬 精密解析+寸法補正",
+                                        "annotations_v1": "📐 寸法値直接使用",
+                                        "direct_fallback": "🔮 GPT直接解析",
+                                    }.get(_pipe, "🔮 直接解析")
+                                    st.caption(f"使用パイプライン: {_pipe_label} | {_bdata.get('note','')[:100]}")
                                     from core.building_3d_generator import generate_building_3d_html
                                     _html3d = generate_building_3d_html(_bdata, canvas_height=600)
                                     import streamlit.components.v1 as _comp3d
