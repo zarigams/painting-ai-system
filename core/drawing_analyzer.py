@@ -241,17 +241,32 @@ class DrawingAnalyzer:
                 "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"},
             })
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": DRAWING_SYSTEM_PROMPT},
-                {"role": "user",   "content": content},
-            ],
-            max_tokens=1000,
-            temperature=0.1,
-        )
-
-        raw = response.choices[0].message.content
+        from core.logger import log_gpt_call, log_error
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": DRAWING_SYSTEM_PROMPT},
+                    {"role": "user",   "content": content},
+                ],
+                max_tokens=1000,
+                temperature=0.1,
+            )
+            raw = response.choices[0].message.content
+            usage = response.usage
+            log_gpt_call(
+                func_name="DrawingAnalyzer.analyze",
+                model=self.model,
+                system_prompt=DRAWING_SYSTEM_PROMPT,
+                user_message_summary=f"[PDF画像{len(target_images)}枚] 縮尺={stated_scale} 用紙={original_paper}",
+                response_text=raw,
+                tokens_prompt=usage.prompt_tokens if usage else None,
+                tokens_completion=usage.completion_tokens if usage else None,
+                tokens_total=usage.total_tokens if usage else None,
+            )
+        except Exception as e:
+            log_error("GPTエラー: DrawingAnalyzer.analyze", e, "GPT")
+            raise
         result = self._parse_response(raw)
         if effective_scale:
             result["_effective_scale"] = effective_scale
@@ -299,17 +314,33 @@ class DrawingAnalyzer:
                 "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"},
             })
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": DRAWING_SYSTEM_PROMPT_ANNOTATED},
-                {"role": "user",   "content": content},
-            ],
-            max_tokens=4000,
-            temperature=0.1,
-        )
-
-        raw = response.choices[0].message.content
+        from core.logger import log_gpt_call, log_error
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": DRAWING_SYSTEM_PROMPT_ANNOTATED},
+                    {"role": "user",   "content": content},
+                ],
+                max_tokens=4000,
+                temperature=0.1,
+            )
+            raw = response.choices[0].message.content
+            usage = response.usage
+            log_gpt_call(
+                func_name="DrawingAnalyzer.analyze_with_annotations",
+                model=self.model,
+                system_prompt=DRAWING_SYSTEM_PROMPT_ANNOTATED,
+                user_message_summary=f"[PDF画像{len(target_images)}枚] 縮尺={stated_scale} 用紙={original_paper}",
+                response_text=raw,
+                tokens_prompt=usage.prompt_tokens if usage else None,
+                tokens_completion=usage.completion_tokens if usage else None,
+                tokens_total=usage.total_tokens if usage else None,
+            )
+        except Exception as e:
+            log_error("GPTエラー: DrawingAnalyzer.analyze_with_annotations", e, "GPT")
+            raise
+        
         result = self._parse_response(raw)
         if effective_scale:
             result["_effective_scale"] = effective_scale

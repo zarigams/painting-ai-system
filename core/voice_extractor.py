@@ -92,21 +92,36 @@ def _extract_raw(voice_text: str, llm, custom_rules: str = "") -> dict:
     if custom_rules and custom_rules.strip():
         system_prompt += f"\n\n【会社カスタム積算ルール】\n{custom_rules.strip()}"
     user_message = f"{_EXTRACT_SCHEMA_HINT}\n\nテキスト：「{voice_text}」"
-    resp = llm.client.chat.completions.create(
-        model=llm.model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ],
-        max_tokens=1500,
-        temperature=0.0,
-        response_format={"type": "json_object"},
-    )
-    text = resp.choices[0].message.content
+    from core.logger import log_gpt_call, log_error
+    try:
+        resp = llm.client.chat.completions.create(
+            model=llm.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            max_tokens=1500,
+            temperature=0.0,
+            response_format={"type": "json_object"},
+        )
+        text = resp.choices[0].message.content
+        usage = resp.usage
+        log_gpt_call(
+            func_name="voice_extractor._extract_raw",
+            model=llm.model,
+            system_prompt=system_prompt,
+            user_message_summary=f"音声テキスト: {voice_text[:400]}",
+            response_text=text,
+            tokens_prompt=usage.prompt_tokens if usage else None,
+            tokens_completion=usage.completion_tokens if usage else None,
+            tokens_total=usage.total_tokens if usage else None,
+        )
+    except Exception as e:
+        log_error("GPTエラー: voice_extractor._extract_raw", e, "GPT")
+        raise
     raw = json.loads(text)
     merged = dict(_RAW_DEFAULTS)
     merged.update({k: v for k, v in raw.items() if k in _RAW_DEFAULTS})
-    merged["_gpt_raw_text"] = text  # ログ用
     return merged
 
 
@@ -174,7 +189,6 @@ def build_quantities(raw: dict) -> dict:
 
 def extract_quantities(voice_text: str, llm, custom_rules: str = "") -> dict:
     raw = _extract_raw(voice_text, llm, custom_rules=custom_rules)
-    _gpt_raw_text = raw.pop("_gpt_raw_text", "")  # ログ用（build_quantities には渡さない）
     quantities = build_quantities(raw)
     extras = {
         "client_name":  raw.get("client_name"),
@@ -183,4 +197,4 @@ def extract_quantities(voice_text: str, llm, custom_rules: str = "") -> dict:
         "floors":       raw.get("floors"),
         "wall_type":    raw.get("wall_type"),
     }
-    return {"quantities": quantities, "raw": raw, "extras": extras, "_gpt_raw_text": _gpt_raw_text}
+    return {"quantities": quantities, "raw": raw, "extras": extras}

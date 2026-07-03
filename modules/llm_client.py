@@ -14,39 +14,26 @@ from openai import OpenAI
 
 
 def _get_api_key() -> Optional[str]:
-    """
-    OpenAI APIキーを取得する。
-    優先順位: Streamlit Secrets → 環境変数(OPENAI_API_KEY)
-    Streamlitが無い／Secrets未設定の環境でも安全に動くようフォールバックする。
-    """
     try:
         import streamlit as st
         key = st.secrets.get("OPENAI_API_KEY")
         if key:
             return key
     except Exception:
-        # streamlit未インストール or secrets未設定 → 環境変数へフォールバック
         pass
     return os.getenv("OPENAI_API_KEY")
 
 
 def _encode_image(image_path: str) -> str:
-    """画像ファイルをbase64エンコード"""
     with open(image_path, "rb") as f:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
 def _encode_image_bytes(image_bytes: bytes) -> str:
-    """バイトデータをbase64エンコード"""
     return base64.b64encode(image_bytes).decode("utf-8")
 
 
 class LLMClient:
-    """
-    LLMクライアント。
-    将来的にローカルLLMへ切り替える場合は、このクラスの実装を差し替えるだけでOK。
-    """
-
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or _get_api_key()
         if not self.api_key:
@@ -63,19 +50,12 @@ class LLMClient:
         description: str,
         system_prompt: str,
     ) -> str:
-        """
-        複数の現場写真＋テキスト説明をLLMに渡して解析する。
-        Returns: LLMの応答テキスト（JSON文字列を想定）
-        """
+        from core.logger import log_gpt_call, log_error
         content = []
-
-        # テキスト説明を最初に追加
         content.append({
             "type": "text",
             "text": f"【営業担当の説明】\n{description}"
         })
-
-        # 画像を追加（最大30枚）
         for i, img_bytes in enumerate(image_data_list[:30]):
             b64 = _encode_image_bytes(img_bytes)
             content.append({
@@ -86,17 +66,32 @@ class LLMClient:
                 }
             })
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": content}
-            ],
-            max_tokens=4000,
-            temperature=0.1,  # 積算は再現性重視で低温度
-        )
-
-        return response.choices[0].message.content
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": content}
+                ],
+                max_tokens=4000,
+                temperature=0.1,
+            )
+            result_text = response.choices[0].message.content
+            usage = response.usage
+            log_gpt_call(
+                func_name="analyze_images_and_description",
+                model=self.model,
+                system_prompt=system_prompt,
+                user_message_summary=f"[写真{len(image_data_list)}枚] {description[:300]}",
+                response_text=result_text,
+                tokens_prompt=usage.prompt_tokens if usage else None,
+                tokens_completion=usage.completion_tokens if usage else None,
+                tokens_total=usage.total_tokens if usage else None,
+            )
+            return result_text
+        except Exception as e:
+            log_error("GPTエラー: analyze_images_and_description", e, "GPT")
+            raise
 
     def ask_followup(
         self,
@@ -104,21 +99,34 @@ class LLMClient:
         new_message: str,
         system_prompt: str,
     ) -> str:
-        """
-        会話履歴を保ちながら追加質問に答える（不足情報収集フェーズ用）
-        """
+        from core.logger import log_gpt_call, log_error
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(conversation_history)
         messages.append({"role": "user", "content": new_message})
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            max_tokens=2000,
-            temperature=0.1,
-        )
-
-        return response.choices[0].message.content
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=2000,
+                temperature=0.1,
+            )
+            result_text = response.choices[0].message.content
+            usage = response.usage
+            log_gpt_call(
+                func_name="ask_followup",
+                model=self.model,
+                system_prompt=system_prompt,
+                user_message_summary=new_message[:400],
+                response_text=result_text,
+                tokens_prompt=usage.prompt_tokens if usage else None,
+                tokens_completion=usage.completion_tokens if usage else None,
+                tokens_total=usage.total_tokens if usage else None,
+            )
+            return result_text
+        except Exception as e:
+            log_error("GPTエラー: ask_followup", e, "GPT")
+            raise
 
     def generate_final_estimation(
         self,
@@ -126,9 +134,7 @@ class LLMClient:
         unit_prices: dict,
         system_prompt: str,
     ) -> str:
-        """
-        収集した案件情報と単価表から最終積算を生成する
-        """
+        from core.logger import log_gpt_call, log_error
         user_message = f"""
 以下の案件情報と単価表をもとに、詳細な積算結果をJSON形式で出力してください。
 
@@ -138,29 +144,51 @@ class LLMClient:
 【使用単価表】
 {json.dumps(unit_prices, ensure_ascii=False, indent=2)}
 """
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_message}
-            ],
-            max_tokens=4000,
-            temperature=0.1,
-        )
-
-        return response.choices[0].message.content
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_message}
+                ],
+                max_tokens=4000,
+                temperature=0.1,
+            )
+            result_text = response.choices[0].message.content
+            usage = response.usage
+            log_gpt_call(
+                func_name="generate_final_estimation",
+                model=self.model,
+                system_prompt=system_prompt,
+                user_message_summary=f"案件情報キー: {list(project_data.keys())}",
+                response_text=result_text,
+                tokens_prompt=usage.prompt_tokens if usage else None,
+                tokens_completion=usage.completion_tokens if usage else None,
+                tokens_total=usage.total_tokens if usage else None,
+            )
+            return result_text
+        except Exception as e:
+            log_error("GPTエラー: generate_final_estimation", e, "GPT")
+            raise
 
     def transcribe_audio(self, audio_bytes: bytes, filename: str = "audio.webm") -> str:
-        """
-        音声バイト列をOpenAI Whisper APIで日本語文字起こしする
-        対応フォーマット: webm, mp3, mp4, wav, m4a 等
-        """
+        from core.logger import log_whisper, log_error
         import io
         audio_file = io.BytesIO(audio_bytes)
         audio_file.name = filename
-        transcript = self.client.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file,
-            language="ja",
-        )
-        return transcript.text
+        try:
+            transcript = self.client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                language="ja",
+            )
+            result_text = transcript.text
+            log_whisper(
+                transcript=result_text,
+                audio_size_bytes=len(audio_bytes),
+            )
+            return result_text
+        except Exception as e:
+            log_whisper(transcript="", audio_size_bytes=len(audio_bytes), error=str(e))
+            log_error("Whisperエラー", e, "WHISPER")
+            raise

@@ -237,7 +237,7 @@ def calculate_from_quantities(
     tax_amount = round(subtotal * tax_rate)
     total      = subtotal + tax_amount
 
-    return {
+    result = {
         "estimation_items": items,
         "subtotal": subtotal,
         "tax_rate": tax_rate,
@@ -252,3 +252,9 @@ def calculate_from_quantities(
             "scaffold_area": q.get("scaffold_area", 0),
         },
     }
+    try:
+        from core.logger import log_calc
+        log_calc(q, result)
+    except Exception:
+        pass
+    return result

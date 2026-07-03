@@ -15,6 +15,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from core.auth import verify_password, show_login_page
 from core.quantity_calculator import calculate_from_quantities
 from core.template_filler import fill_template, fill_estimation_sheet
+from core.logger import (
+    log_ui, log_auth, log_file, log_error, log_admin, log_measure,
+    log_geo_calc, get_session_logs, export_session_logs_json,
+    list_log_dates, get_file_logs,
+)
 
 # ─────────────────────────────────────────────────────────────
 # ページ設定
@@ -287,6 +292,7 @@ with st.sidebar:
             st.markdown(f"⬜ {label}")
     st.markdown("---")
     if st.button("🔄 最初からやり直す", use_container_width=True):
+        log_ui("最初からやり直す", {"from_step": st.session_state.get("step")})
         for k in ["step", "project", "drawing_data", "image_data",
                   "quantities", "estimation", "voice_memo",
                   "voice_extras", "voice_raw", "auto_done",
@@ -309,6 +315,7 @@ with st.sidebar:
             st.session_state.estimation_rules = rules_input
             from core.auth import save_estimation_rules
             save_estimation_rules(st.session_state.company_id, rules_input)
+            log_admin("積算ルール保存", {"rules_preview": rules_input[:200]})
             st.success("保存しました")
 
     if st.button("💰 単価設定", use_container_width=True, key="open_price_settings"):
@@ -360,6 +367,7 @@ with st.sidebar:
     st.markdown("---")
 
     if st.button("🚪 ログアウト", use_container_width=True):
+        log_auth("ログアウト", st.session_state.get("company_id", ""), True)
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.rerun()
@@ -413,10 +421,13 @@ if st.session_state.get("show_price_settings", False):
     c1, c2 = st.columns(2)
     with c1:
         if st.button("💾 保存して閉じる", type="primary", use_container_width=True):
+            changed = {k: {"old": _current_prices.get(k), "new": v}
+                       for k, v in _new_prices.items() if v != _current_prices.get(k)}
             st.session_state.unit_prices = _new_prices
             st.session_state.show_price_settings = False
             from core.auth import save_unit_prices
             save_unit_prices(st.session_state.company_id, _new_prices)
+            log_admin("単価設定保存", {"changed_items": changed})
             st.success("単価を保存しました")
             st.rerun()
     with c2:
@@ -457,6 +468,7 @@ if st.session_state.get("show_account_settings", False):
                 "fax":          _new_fax,
                 "address":      _new_addr,
             })
+            log_admin("会社情報保存", {"company_name": _new_name, "contact_name": _new_cont, "tel": _new_tel})
             st.success("✅ 会社情報を保存しました")
 
     st.markdown("---")
@@ -477,8 +489,10 @@ if st.session_state.get("show_account_settings", False):
                 st.error("パスワードは4文字以上にしてください")
             else:
                 if change_password(_cid, _old_pw, _new_pw):
+                    log_admin("パスワード変更成功", {"company_id": _cid})
                     st.success("✅ パスワードを変更しました")
                 else:
+                    log_admin("パスワード変更失敗（現在PW不一致）", {"company_id": _cid})
                     st.error("現在のパスワードが間違っています")
 
     # ── 管理者専用セクション ──────────────────────────────────
@@ -521,6 +535,7 @@ if st.session_state.get("show_account_settings", False):
                         if _c["id"] == _target_id:
                             _c["password_hash"] = _hash_password(_reset_pw)
                             _save_accounts(_d)
+                            log_admin("管理者: PW強制リセット", {"target_id": _target_id, "by": _cid})
                             st.success(f"✅ {_target_id} のパスワードをリセットしました")
                             break
 
@@ -545,10 +560,69 @@ if st.session_state.get("show_account_settings", False):
                         is_admin=_new_admin,
                     )
                     if _ok:
+                        log_admin("管理者: 新規アカウント追加", {"new_id": _new_id, "new_name": _new_cname, "is_admin": _new_admin})
                         st.success(f"✅ {_new_id}（{_new_cname}）を追加しました")
                         st.rerun()
                     else:
+                        log_admin("管理者: 新規アカウント追加失敗（ID重複）", {"new_id": _new_id})
                         st.error(f"ID「{_new_id}」は既に存在します")
+
+    # ── ログビューア ─────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("🔍 操作ログビューア")
+    _logs = get_session_logs()
+    if not _logs:
+        st.info("このセッションにログはまだありません。操作するとここに表示されます。")
+    else:
+        # フィルタ
+        _lv_cols = st.columns(3)
+        _cat_opts = ["すべて"] + sorted(set(e.get("category","") for e in _logs))
+        _lvl_opts = ["すべて", "INFO", "WARN", "ERROR"]
+        _sel_cat = _lv_cols[0].selectbox("カテゴリ", _cat_opts, key="log_cat_filter")
+        _sel_lvl = _lv_cols[1].selectbox("レベル", _lvl_opts, key="log_lvl_filter")
+        _sel_n   = _lv_cols[2].number_input("表示件数", min_value=10, max_value=500, value=50, step=10, key="log_n")
+        _filtered = [
+            e for e in _logs
+            if (_sel_cat == "すべて" or e.get("category") == _sel_cat)
+            and (_sel_lvl == "すべて" or e.get("level") == _sel_lvl)
+        ]
+        _show = list(reversed(_filtered))[:int(_sel_n)]
+        st.caption(f"全{len(_filtered)}件中 最新{len(_show)}件を表示")
+        import pandas as pd
+        _log_rows = [{
+            "時刻":     e.get("ts","")[-12:],
+            "Lv":       e.get("level",""),
+            "カテゴリ": e.get("category",""),
+            "イベント": e.get("event",""),
+        } for e in _show]
+        st.dataframe(pd.DataFrame(_log_rows), use_container_width=True, hide_index=True)
+        # 選択ログの詳細
+        _sel_idx = st.number_input("詳細表示（行番号 0〜）", min_value=0, max_value=max(0, len(_show)-1), value=0, step=1, key="log_detail_idx")
+        if _show:
+            st.json(_show[int(_sel_idx)])
+        # ダウンロード
+        st.download_button(
+            "📥 ログをJSONでダウンロード",
+            data=export_session_logs_json().encode("utf-8"),
+            file_name=f"app_log_{__import__('datetime').datetime.now().strftime('%Y%m%d_%H%M')}.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+        # ローカルファイルログも表示（Claude読み取り用）
+        if _is_admin:
+            with st.expander("📂 ファイルログ（ローカル実行時のみ）"):
+                _log_dates = list_log_dates(_cid)
+                if _log_dates:
+                    _sel_date = st.selectbox("日付", _log_dates, key="log_date_sel")
+                    _file_logs = get_file_logs(_cid, _sel_date)
+                    st.caption(f"{_sel_date}: {len(_file_logs)}件")
+                    if _file_logs:
+                        st.dataframe(pd.DataFrame([{
+                            "時刻": e.get("ts","")[-12:], "Lv": e.get("level",""),
+                            "カテゴリ": e.get("category",""), "イベント": e.get("event",""),
+                        } for e in reversed(_file_logs)]), use_container_width=True, hide_index=True)
+                else:
+                    st.info("ファイルログがありません（Streamlit Cloud では揮発性のため残りません）")
 
     st.markdown("---")
     if st.button("✕ 閉じる", use_container_width=True, key="close_account_settings"):
@@ -585,9 +659,11 @@ if st.session_state.step == 1:
                     text = llm.transcribe_audio(audio_input.getvalue(), "memo.webm")
                     prev = st.session_state.voice_memo
                     st.session_state.voice_memo = (prev + "\n" + text).strip() if prev else text
+                    log_ui("STEP1: 音声文字起こし完了", {"text_preview": text[:200], "audio_size": len(audio_input.getvalue())})
                     st.success("文字起こし完了！右の欄に反映しました。")
                     st.rerun()
                 except Exception as e:
+                    log_error("STEP1: 音声文字起こし失敗", e)
                     st.error(f"文字起こし失敗: {e}")
     with ac2:
         voice_memo = st.text_area(
@@ -719,6 +795,15 @@ if st.session_state.step == 1:
             st.session_state.voice_memo = voice_memo
             st.session_state.auto_done  = False
             st.session_state.step = 2
+            log_ui("STEP1→STEP2遷移: 見積もり作成開始", {
+                "client_name": client_name,
+                "site_address": site_address,
+                "has_pdf": bool(pdf_file),
+                "has_photos": bool(photo_files),
+                "has_voice": bool(voice_memo.strip()),
+                "building_type": building_type,
+                "floors": building_floors,
+            })
             st.rerun()
 
 
@@ -772,9 +857,11 @@ elif st.session_state.step == 2:
         if st.button("✏️ 数量入力フォームへ →", type="primary"):
             from core.voice_extractor import build_quantities
             st.session_state.quantities = build_quantities({})
+            log_ui("STEP2: データなし→手動フォームへ")
             st.session_state.step = 3
             st.rerun()
         if st.button("← 入力に戻る"):
+            log_ui("STEP2→STEP1: 入力に戻る")
             st.session_state.step = 1
             st.rerun()
         st.stop()
@@ -788,6 +875,7 @@ elif st.session_state.step == 2:
         st.caption("入力ソース： " + " ＋ ".join(srcs))
 
         if st.button("▶️ 自動積算を実行する", type="primary", use_container_width=True):
+            log_ui("自動積算実行ボタン", {"has_voice": has_voice, "has_pdf": has_pdf, "has_photos": has_photos})
             with st.spinner("AIが音声・資料から数量を抽出中…（30秒〜1分程度）"):
                 try:
                     from modules.llm_client import LLMClient
@@ -866,18 +954,26 @@ elif st.session_state.step == 2:
                         sales_rep=proj.get("sales_rep", ""),
                     )
                     st.session_state.auto_done = True
+                    log_ui("自動積算完了", {
+                        "wall_area": quantities.get("wall_area"),
+                        "roof_area": quantities.get("roof_area"),
+                        "scaffold_area": quantities.get("scaffold_area"),
+                    })
                     st.rerun()
 
                 except Exception as e:
+                    log_error("自動積算エラー", e)
                     st.error(f"自動積算エラー: {e}")
                     st.info("APIキー未設定などの場合は、下のボタンで手動入力に切り替えできます。")
 
         if st.button("✏️ 手動入力で進める（AIを使わない）"):
             from core.voice_extractor import build_quantities
             st.session_state.quantities = build_quantities({})
+            log_ui("STEP2: AI使わず手動入力へ")
             st.session_state.step = 3
             st.rerun()
         if st.button("← 入力に戻る"):
+            log_ui("STEP2→STEP1: 入力に戻る")
             st.session_state.step = 1
             st.rerun()
 
@@ -1061,12 +1157,14 @@ elif st.session_state.step == 2:
                         else:
                             p = st.session_state[_k_pending]
                             px_len = _math.sqrt((cx-p["x1"])**2 + (cy-p["y1"])**2)
-                            st.session_state[_k_pts].append({
+                            new_seg = {
                                 "label": p["label"], "x1": p["x1"], "y1": p["y1"],
                                 "x2": cx, "y2": cy,
                                 "px_disp": round(px_len, 1),
                                 "px_orig": round(px_len * _scale_r, 1),
-                            })
+                            }
+                            st.session_state[_k_pts].append(new_seg)
+                            log_measure("クリック計測: セグメント確定", segments=[new_seg])
                             st.session_state[_k_pending] = None
                         st.rerun(scope="fragment")  # fragment だけ再描画
 
@@ -1105,9 +1203,12 @@ elif st.session_state.step == 2:
 
                                     if _reflect and st.button("📐 下の計算フォームに反映", type="primary",
                                                               use_container_width=True, key=f"{ns}_reflect"):
+                                        _reflected = {}
                                         for _lab, _key in _reflect.items():
                                             if _lab in _label_vals:
                                                 st.session_state[_key] = _label_vals[_lab]
+                                                _reflected[_lab] = _label_vals[_lab]
+                                        log_measure("クリック計測: フォームに反映", reflected_values=_reflected)
                                         st.success("✅ 幾何学計算フォームに反映しました")
                                         # 下の計算フォームへ反映するためページ全体を再実行
                                         st.rerun()
@@ -1116,6 +1217,7 @@ elif st.session_state.step == 2:
 
                     # リセットボタン
                     if st.button("🗑️ 計測をリセット", use_container_width=True, key=f"{ns}_reset"):
+                        log_measure("クリック計測: リセット", segments=st.session_state.get(_k_pts, []))
                         st.session_state[_k_pts] = []
                         st.session_state[_k_pending] = None
                         st.session_state[_k_last] = None
@@ -1734,6 +1836,15 @@ elif st.session_state.step == 2:
                     eave_overhang_m=eave_overhang,
                 )
                 st.session_state["geo_result"] = geo
+                log_geo_calc("幾何計算実行", inputs={
+                    "south_width_m": s_w, "north_width_m": n_w,
+                    "east_width_m": e_w, "west_width_m": w_w,
+                    "ridge_height_m": ridge_h_input, "eave_height_m": eave_h_input,
+                }, result={
+                    "wall_net_total": geo.get("wall_net_total"),
+                    "roof_area_m2": geo.get("roof_area_m2"),
+                    "koun": geo.get("koun"),
+                })
 
                 # 各面の内訳テーブル
                 st.markdown("##### 📊 外壁 — 面ごとの計算")
@@ -1781,6 +1892,7 @@ elif st.session_state.step == 2:
                         site_address=st.session_state.get("project", {}).get("site_address", ""),
                         sales_rep=st.session_state.get("project", {}).get("sales_rep", ""),
                     )
+                    log_ui("幾何計算値を見積もりに反映", {"wall_area": geo["wall_net_total"], "roof_area": geo["roof_area_m2"]})
                     st.success("✅ 計算値を反映しました")
                     st.rerun()
             else:
@@ -1952,6 +2064,7 @@ elif st.session_state.step == 2:
                 site_address=proj.get("site_address", ""),
                 sales_rep=proj.get("sales_rep", ""),
             )
+            log_ui("STEP2: 再計算ボタン", {"wall_area": edit_wall, "roof_area": edit_roof, "discount": edit_discount})
             st.rerun()
 
         if extras.get("notes"):
@@ -2021,6 +2134,11 @@ elif st.session_state.step == 2:
                             })
                             st.session_state.last_correction = result
                             st.session_state["_clear_correction"] = True
+                            log_ui("STEP2: 修正反映", {
+                                "correction_text": correction_text[:200],
+                                "changes": result["changes"],
+                                "explanation": result.get("explanation", ""),
+                            })
                             st.rerun()
                         else:
                             st.info(
@@ -2028,6 +2146,7 @@ elif st.session_state.step == 2:
                                 f"（{result.get('explanation', '')}）"
                             )
                     except Exception as e:
+                        log_error("修正反映エラー", e)
                         st.error(f"修正反映エラー: {e}")
 
         # ── 修正履歴 ──────────────────────────────────────────
@@ -2043,13 +2162,16 @@ elif st.session_state.step == 2:
         b1, b2 = st.columns(2)
         with b1:
             if st.button("📝 詳細を確認・修正する", use_container_width=True):
+                log_ui("STEP2→STEP3: 詳細確認へ")
                 st.session_state.step = 3
                 st.rerun()
         with b2:
             if st.button("✅ この内容で見積書へ →", type="primary", use_container_width=True):
+                log_ui("STEP2→STEP4: 見積書へ直接進む")
                 st.session_state.step = 4
                 st.rerun()
         if st.button("← 入力に戻る"):
+            log_ui("STEP2→STEP1: 入力に戻る（積算完了後）")
             st.session_state.step = 1
             st.rerun()
 
@@ -2213,10 +2335,19 @@ elif st.session_state.step == 3:
                 sales_rep=proj.get("sales_rep", ""),
             )
             st.session_state.estimation = estimation
+            log_ui("STEP3フォーム送信", {
+                "wall_area": wall_area, "roof_area": roof_area,
+                "scaffold_area": scaffold_area, "fascia_length": fascia_length,
+                "gutter_length": gutter_length, "joint_seal_length": joint_seal_length,
+                "misc_cost": misc_cost, "discount": discount,
+                "do_roof": do_roof, "do_foundation": do_foundation,
+                "total": estimation.get("total"),
+            })
             st.session_state.step = 4
             st.rerun()
 
     if st.button("← 自動積算に戻る"):
+        log_ui("STEP3→STEP2: 自動積算に戻る")
         st.session_state.step = 2
         st.rerun()
 
@@ -2346,9 +2477,11 @@ elif st.session_state.step == 4:
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             use_container_width=True,
                         )
+                    log_file("Excel生成成功", filename, size_bytes=len(excel_bytes))
                     st.success(f"✅ 見積書・積算集計表を生成しました！")
 
                 except Exception as e:
+                    log_error("Excel生成エラー", e, "FILE")
                     st.error(f"Excel生成エラー: {e}")
                     import traceback
                     with st.expander("詳細エラー"):
@@ -2379,10 +2512,12 @@ elif st.session_state.step == 4:
     b1, b2 = st.columns(2)
     with b1:
         if st.button("← 数量を確認・修正する", use_container_width=True):
+            log_ui("STEP4→STEP3: 数量確認に戻る")
             st.session_state.step = 3
             st.rerun()
     with b2:
         if st.button("🆕 新しい案件を作成", type="primary", use_container_width=True):
+            log_ui("STEP4: 新規案件作成", {"client_name": st.session_state.get("project", {}).get("client_name")})
             for k in ["step", "project", "drawing_data", "image_data",
                       "quantities", "estimation", "pdf_bytes",
                       "photo_bytes_list", "voice_memo",
