@@ -97,6 +97,8 @@ DRAWING_SYSTEM_PROMPT_ANNOTATED = """
 - 幅寸法が図面に明記されていない場合は、立面図の外形を視覚的に測定して推定値を返すこと
 - 縮尺が1/100なら、図面上で1mmが実寸10cmに相当する
 - 全ての立面図（南・東・西・北）を確認し、それぞれの幅を返すこと
+- 窓・ドア・玄関などの開口部は各面ごとにリストアップし、幅×高さ（m）を記録すること
+- 各面の wall_area = 幅 × 軒高 − Σ(開口部の幅 × 高さ) で計算すること
 
 ## 出力形式（JSONのみ。説明文不要）
 {
@@ -110,6 +112,41 @@ DRAWING_SYSTEM_PROMPT_ANNOTATED = """
   "notes": "寄棟屋根、南面バルコニーあり",
   "estimated_fields": [],
   "confidence": "medium",
+  "faces": {
+    "south": {
+      "width": 9.1,
+      "height": 6.5,
+      "openings": [
+        {"type": "窓", "width": 1.6, "height": 1.2},
+        {"type": "窓", "width": 1.6, "height": 1.2},
+        {"type": "ドア", "width": 0.9, "height": 2.1}
+      ],
+      "wall_area": 47.5
+    },
+    "north": {
+      "width": 9.1,
+      "height": 6.5,
+      "openings": [
+        {"type": "窓", "width": 1.6, "height": 1.2}
+      ],
+      "wall_area": 57.3
+    },
+    "east": {
+      "width": 7.2,
+      "height": 6.5,
+      "openings": [
+        {"type": "窓", "width": 0.9, "height": 1.2}
+      ],
+      "wall_area": 45.7
+    },
+    "west": {
+      "width": 7.2,
+      "height": 6.5,
+      "openings": [],
+      "wall_area": 46.8
+    }
+  },
+  "total_wall_area": 197.3,
   "annotations": [
     {"label": "南面幅", "value": "9.10", "unit": "m", "x_pct": 25, "y_pct": 82, "x1_pct": 8, "x2_pct": 43, "confidence": "medium", "category": "width"},
     {"label": "東面幅", "value": "7.20", "unit": "m", "x_pct": 73, "y_pct": 82, "x1_pct": 55, "x2_pct": 92, "confidence": "medium", "category": "width"},
@@ -120,7 +157,10 @@ DRAWING_SYSTEM_PROMPT_ANNOTATED = """
   ]
 }
 
-exterior_wall_area と roof_area は null のまま返してください（別モジュールで幾何学計算します）。
+- faces: 各面の幅・軒高・開口部リスト・wall_area（開口控除済み面積）を返す
+- total_wall_area: 4面のwall_area合計（開口控除済み）を返す
+- exterior_wall_area は null のまま（別モジュールで幾何学計算するため）
+- faces/total_wall_area が取得できない場合はキーごと省略してよい
 """
 
 # カテゴリ別の色（RGB）

@@ -820,7 +820,10 @@ elif st.session_state.step == 2:
 
     def _merge_drawing(q, drawing_data):
         """図面で得た面積を、音声で未入力(0)の項目だけ補完する。"""
-        wall = drawing_data.get("exterior_wall_area")
+        # faces.total_wall_area を優先（開口部控除済みの正確な値）
+        faces = drawing_data.get("faces") or {}
+        total_wall_area = drawing_data.get("total_wall_area") or faces.get("total_wall_area")
+        wall = total_wall_area or drawing_data.get("exterior_wall_area")
         roof = drawing_data.get("roof_area")
         if wall and not q.get("wall_area"):
             q["wall_area"]     = float(wall)
