@@ -258,6 +258,7 @@ def analyze_trace_for_building(
     raw_text = ""
     try:
         from openai import OpenAI
+        from core.logger import log_gpt_call, log_error
         client = OpenAI(api_key=api_key)
 
         # 構造線のみにフィルタリング（外枠除外 + min 1.0m以上）
@@ -305,8 +306,25 @@ def analyze_trace_for_building(
             temperature=0.1,
         )
 
+        finish_reason = response.choices[0].finish_reason
         raw_text = response.choices[0].message.content.strip()
         _raw_log = raw_text
+
+        # ログ記録
+        log_gpt_call(
+            func_name="trace_analyzer.analyze_trace_for_building",
+            model="gpt-4o",
+            system_prompt=_SYSTEM[:200],
+            user_message_summary=f"線データ{len(lines_data)}本 + クリーントレース画像",
+            response_text=raw_text,
+            tokens_prompt=response.usage.prompt_tokens if response.usage else None,
+            tokens_completion=response.usage.completion_tokens if response.usage else None,
+            tokens_total=response.usage.total_tokens if response.usage else None,
+        )
+
+        # 空レスポンスガード
+        if not raw_text:
+            return {"error": f"GPTが空レスポンスを返しました (finish_reason={finish_reason})", "_raw_gpt_response": ""}
 
         # マークダウンコードブロック除去
         if raw_text.startswith("```"):
@@ -320,6 +338,8 @@ def analyze_trace_for_building(
         return result
 
     except json.JSONDecodeError as e:
+        log_error("JSONパースエラー: trace_analyzer.analyze_trace_for_building", e, "GPT")
         return {"error": f"JSONパースエラー: {e}", "_raw_gpt_response": raw_text}
     except Exception as e:
+        log_error("エラー: trace_analyzer.analyze_trace_for_building", e, "GPT")
         return {"error": str(e), "_raw_gpt_response": raw_text}
