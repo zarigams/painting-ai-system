@@ -818,13 +818,42 @@ elif st.session_state.step == 2:
     has_pdf    = "pdf_bytes" in st.session_state
     has_photos = bool(st.session_state.get("photo_bytes_list"))
 
-    def _merge_drawing(q, drawing_data):
+    def _merge_drawing(q, drawing_data, annotations=None):
         """図面で得た面積を、音声で未入力(0)の項目だけ補完する。"""
         # faces.total_wall_area を優先（開口部控除済みの正確な値）
         faces = drawing_data.get("faces") or {}
         total_wall_area = drawing_data.get("total_wall_area") or faces.get("total_wall_area")
         wall = total_wall_area or drawing_data.get("exterior_wall_area")
         roof = drawing_data.get("roof_area")
+
+        # annotationsから幅・高さを取得して幾何計算（wall/roofが未取得の場合のフォールバック）
+        if not wall and annotations:
+            def _ann_val(kw, items):
+                for a in items:
+                    if kw in a.get("label", "") and a.get("confidence") in ("high", "medium"):
+                        try:
+                            return float(a["value"])
+                        except Exception:
+                            pass
+                return None
+            south_w = _ann_val("南面幅", annotations)
+            east_w  = _ann_val("東面幅", annotations)
+            eave_h  = _ann_val("軒高",   annotations) or 6.5
+            ridge_h = _ann_val("棟高",   annotations) or 8.693
+            if south_w and east_w:
+                try:
+                    from core.drawing_calc import calc_geometry_4face
+                    geo = calc_geometry_4face(
+                        south_width_m=south_w, north_width_m=0,
+                        east_width_m=east_w,   west_width_m=0,
+                        ridge_height_m=ridge_h, eave_height_m=eave_h,
+                        opening_deduction_rate=0.15,
+                    )
+                    wall = geo["wall_net_total"]
+                    roof = geo["roof_area_m2"]
+                except Exception:
+                    pass
+
         if wall and not q.get("wall_area"):
             q["wall_area"]     = float(wall)
             q["scaffold_area"] = round(float(wall) * 1.1, 1)
@@ -916,7 +945,7 @@ elif st.session_state.step == 2:
                             )
                         except Exception:
                             st.session_state.drawing_page1_raw = annotated_img
-                        quantities = _merge_drawing(quantities, drawing_data)
+                        quantities = _merge_drawing(quantities, drawing_data, annotations)
 
                     if has_photos:
                         from modules.image_analyzer import ImageAnalyzer
