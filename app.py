@@ -826,8 +826,9 @@ elif st.session_state.step == 2:
         wall = total_wall_area or drawing_data.get("exterior_wall_area")
         roof = drawing_data.get("roof_area")
 
-        # annotationsから幅・高さを取得して幾何計算（wall/roofが未取得の場合のフォールバック）
-        if not wall and annotations:
+        # annotationsから幅・高さを取得して幾何計算
+        # wall または roof が未取得の場合にフォールバック（独立して判定）
+        if (not wall or not roof) and annotations:
             def _ann_val(kw, items):
                 for a in items:
                     if kw in a.get("label", "") and a.get("confidence") in ("high", "medium"):
@@ -849,8 +850,10 @@ elif st.session_state.step == 2:
                         ridge_height_m=ridge_h, eave_height_m=eave_h,
                         opening_deduction_rate=0.15,
                     )
-                    wall = geo["wall_net_total"]
-                    roof = geo["roof_area_m2"]
+                    if not wall:
+                        wall = geo["wall_net_total"]
+                    if not roof:
+                        roof = geo["roof_area_m2"]
                 except Exception:
                     pass
 
