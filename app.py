@@ -854,6 +854,11 @@ elif st.session_state.step == 2:
                         wall = geo["wall_net_total"]
                     if not roof:
                         roof = geo["roof_area_m2"]
+                    # 土台水切 = 周長（1データポイントで確認済み: 周長×1.5≈実測値）
+                    # 保守的に周長のみ使用。テスターデータ蓄積後に係数調整予定
+                    if not q.get("water_cutoff_length"):
+                        perimeter = 2 * (south_w + east_w)
+                        q["water_cutoff_length"] = round(perimeter, 1)
                 except Exception:
                     pass
 
