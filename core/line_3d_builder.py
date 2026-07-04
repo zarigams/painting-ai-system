@@ -466,7 +466,7 @@ def assemble_3d(face_geometries: dict, roof_type: str, annotations_dims: dict = 
                 "type":   "窓",
             })
 
-    note = (f"線解析v1: 幅{total_width}m / 軒高{eave_height}m / "
+    note = (f"線解析v2-GPT: 幅{total_width}m / 軒高{eave_height}m / "
             f"棟高{ridge_height}m / 奥行{total_depth}m / "
             f"1F高{floor1_h}m / 窓{len(openings)}個")
 
