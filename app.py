@@ -1907,38 +1907,53 @@ elif st.session_state.step == 2:
                                             from core.line_3d_builder import build_3d_from_line_analysis
                                             _m4_key = _get_api_key()
                                             _m4_ann_dims = None
-                                            _m4_dd = st.session_state.get("drawing_data") or {}
                                             _m4_ann = st.session_state.get("drawing_annotations") or []
                                             if _m4_ann:
                                                 from core.building_3d_generator import build_3d_from_annotations
                                                 _m4_tmp = build_3d_from_annotations(_m4_ann)
                                                 if "error" not in _m4_tmp:
                                                     _m4_ann_dims = _m4_tmp.get("dimensions")
-                                            _m4_stages = []
+                                            # ステージ別進捗UI
+                                            _m4_status_area = st.empty()
+                                            _m4_log_area    = st.empty()
+                                            _m4_all_logs    = []
+                                            _stage_icons = {"A":"🏷️","B":"📏","C":"📐","D":"🏠","E":"🧩"}
                                             def _m4_progress(stage, msg):
-                                                _m4_stages.append(f"[{stage}] {msg}")
-                                                st.session_state["_m4_progress"] = list(_m4_stages)
-                                            with st.spinner("線解析→3D 実行中…"):
-                                                try:
-                                                    _m4_result = build_3d_from_line_analysis(
-                                                        img_bytes        = _m4_orig,
-                                                        scale            = _m4_scale,
-                                                        api_key          = _m4_key,
-                                                        face_regions     = _m4_manual_regions,
-                                                        annotations_dims = _m4_ann_dims,
-                                                        progress_callback= _m4_progress,
-                                                    )
-                                                    st.session_state["building_3d_data"] = _m4_result
-                                                    st.session_state["_m4_face_regions"] = _m4_result.get("_face_regions")
-                                                    st.success(f"✅ 完了: {_m4_result.get('note','')[:120]}")
-                                                    # 進捗ログ表示
-                                                    with st.expander("🔍 解析ログ"):
-                                                        for _log in st.session_state.get("_m4_progress",[]):
-                                                            st.caption(_log)
-                                                except Exception as _m4_e:
-                                                    st.error(f"線解析失敗: {_m4_e}")
-                                                    import traceback
-                                                    st.code(traceback.format_exc())
+                                                icon = _stage_icons.get(stage, "▶️")
+                                                _m4_all_logs.append(f"{icon} Stage {stage}: {msg}")
+                                                _m4_status_area.info(f"{icon} **Stage {stage}**: {msg}")
+                                                _m4_log_area.caption(" → ".join(_m4_all_logs[-3:]))
+                                            try:
+                                                _m4_result = build_3d_from_line_analysis(
+                                                    img_bytes        = _m4_orig,
+                                                    scale            = _m4_scale,
+                                                    api_key          = _m4_key,
+                                                    face_regions     = _m4_manual_regions,
+                                                    annotations_dims = _m4_ann_dims,
+                                                    progress_callback= _m4_progress,
+                                                )
+                                                _m4_status_area.empty()
+                                                _m4_log_area.empty()
+                                                st.session_state["building_3d_data"] = _m4_result
+                                                st.session_state["_m4_face_regions"] = _m4_result.get("_face_regions")
+                                                st.success(f"✅ 完了: {_m4_result.get('note','')[:120]}")
+                                                # 面ごとの結果サマリ
+                                                _m4_fg = _m4_result.get("_face_geometries", {})
+                                                if _m4_fg:
+                                                    with st.expander("🔍 各面の検出結果"):
+                                                        for _fn, _fg in _m4_fg.items():
+                                                            if isinstance(_fg, dict) and "error" not in _fg:
+                                                                st.caption(f"**{_fn}**: 幅{_fg.get('width_m')}m / 高{_fg.get('height_m')}m / 窓{len(_fg.get('windows',[]))}個")
+                                                            elif isinstance(_fg, dict):
+                                                                st.caption(f"**{_fn}**: {_fg.get('error')}")
+                                                with st.expander("📋 全解析ログ"):
+                                                    for _log in _m4_all_logs:
+                                                        st.caption(_log)
+                                            except Exception as _m4_e:
+                                                _m4_status_area.empty()
+                                                st.error(f"線解析失敗: {_m4_e}")
+                                                import traceback
+                                                st.code(traceback.format_exc())
 
                             with _3d_result_tab:
                                 _bdata = st.session_state.get("building_3d_data")

@@ -126,27 +126,25 @@ def extract_face_geometry(lines: list, m_per_px: float, face_h_px: int) -> dict:
     """
     1つの立面図領域内の線リストから建物外形を算出。GPT不要。
 
-    アルゴリズム:
-      水平線: y座標が最も上の長い線 = 軒線, 最も下の長い線 = 地盤線
-      垂直線: x座標が最も左の長い線 = 左端, 最も右の長い線 = 右端
-      建物幅  = 右端x - 左端x → real_m
-      建物高さ = 下端y - 上端y → real_m
-      1F/2F境界 = 2番目に長い水平線群の中で最も多い y 付近
-      窓候補 = 建物エリア内の短い水平線ペア（幅 0.4〜2.5m）
+    【窓検出アルゴリズム改善 v2】
+    「2水平線ペア」ではなく「4線矩形検出」を使用。
+    - 水平ペア（上端・下端）+ 両端に垂直線が存在する場合のみ窓として確定
+    - 建物外形ボックス（left_x〜right_x, eave_y〜ground_y）の内側のみ対象
+    - 1面最大8個に制限
 
     Returns:
       {
-        "width_m": float,
-        "height_m": float,
-        "floor_line_ratio": float,  # 地盤から軒までの高さに対する1F/2F境界の比率
-        "windows": [{"x_m":, "z_m":, "w_m":, "h_m":}],
-        "eave_y_px": float, "ground_y_px": float,
-        "left_x_px": float, "right_x_px": float,
+        "width_m", "height_m", "floor1_h_m", "floor_line_ratio",
+        "windows": [{"x_m","z_m","w_m","h_m"}],
+        "eave_y_px", "ground_y_px", "left_x_px", "right_x_px",
       }
     """
-    MIN_WALL_M = 2.0   # 外壁候補の最小長さ（m）
-    MIN_WIN_M  = 0.3   # 窓候補の最小幅（m）
-    MAX_WIN_M  = 2.8   # 窓候補の最大幅（m）
+    MIN_WALL_M  = 2.0   # 外壁候補の最小長さ（m）
+    MIN_WIN_M   = 0.4   # 窓幅の最小（m）
+    MAX_WIN_M   = 2.6   # 窓幅の最大（m）
+    MAX_WIN_H_M = 2.0   # 窓高さの最大（m）
+    MIN_WIN_H_M = 0.25  # 窓高さの最小（m）
+    MAX_WINS    = 8     # 1面の最大窓数
 
     h_lines = [l for l in lines if l.get("orientation") == "horizontal"]
     v_lines = [l for l in lines if l.get("orientation") == "vertical"]
@@ -154,21 +152,18 @@ def extract_face_geometry(lines: list, m_per_px: float, face_h_px: int) -> dict:
     if not h_lines:
         return {"error": "水平線なし"}
 
-    # --- 軒と地盤の検出 ---
-    # 長い水平線（MIN_WALL_M以上）を上から/下からそれぞれ探す
+    # ── 軒と地盤の検出 ──────────────────────────────────────────────────
     long_h = sorted([l for l in h_lines if l.get("real_m", 0) >= MIN_WALL_M],
                     key=lambda l: l.get("real_m", 0), reverse=True)
     if not long_h:
         long_h = sorted(h_lines, key=lambda l: l.get("real_m", 0), reverse=True)
 
-    # y座標（上=小, 下=大）
-    eave_y   = min((l["y1"]+l["y2"])/2 for l in long_h)  # 最も上の長い水平線
-    ground_y = max((l["y1"]+l["y2"])/2 for l in long_h)  # 最も下の長い水平線
-
+    eave_y   = min((l["y1"]+l["y2"])/2 for l in long_h)
+    ground_y = max((l["y1"]+l["y2"])/2 for l in long_h)
     height_px = max(ground_y - eave_y, 1.0)
     height_m  = round(height_px * m_per_px, 2)
 
-    # --- 建物幅の検出 ---
+    # ── 建物幅の検出 ──────────────────────────────────────────────────────
     if v_lines:
         long_v = sorted([l for l in v_lines if l.get("real_m", 0) >= MIN_WALL_M],
                         key=lambda l: l.get("real_m", 0), reverse=True)
@@ -177,87 +172,131 @@ def extract_face_geometry(lines: list, m_per_px: float, face_h_px: int) -> dict:
         left_x  = min((l["x1"]+l["x2"])/2 for l in long_v)
         right_x = max((l["x1"]+l["x2"])/2 for l in long_v)
     else:
-        # 垂直線なし: 水平線の端点から推定
         left_x  = min(min(l["x1"], l["x2"]) for l in long_h)
         right_x = max(max(l["x1"], l["x2"]) for l in long_h)
 
     width_px = max(right_x - left_x, 1.0)
     width_m  = round(width_px * m_per_px, 2)
 
-    # --- 1F/2F境界の検出 ---
-    # 軒〜地盤の間にある中程度の長さの水平線のうち、最も多く集まるy座標帯
+    # ── 建物外形ボックスのマージン ─────────────────────────────────────────
+    # 外壁線自体 (left_x, right_x) から内側にマージンを取る
+    wall_margin_px = max(5.0, width_px * 0.02)  # 幅の2%
+    inner_left  = left_x  + wall_margin_px
+    inner_right = right_x - wall_margin_px
+    inner_top   = eave_y  + height_px * 0.05   # 軒から5%下
+    inner_bot   = ground_y - height_px * 0.02  # 地盤から2%上
+
+    # ── 1F/2F境界の検出 ───────────────────────────────────────────────────
+    # 建物幅の30%以上の長さを持ち、建物内部にある水平線のうち
+    # 最も密集するy座標 = 1F/2F境界
     mid_h = [l for l in h_lines
-             if eave_y < (l["y1"]+l["y2"])/2 < ground_y
-             and l.get("real_m", 0) >= MIN_WALL_M * 0.5]
+             if inner_top < (l["y1"]+l["y2"])/2 < inner_bot
+             and l.get("real_m", 0) >= width_m * 0.3
+             and inner_left <= min(l["x1"],l["x2"])
+             and max(l["x1"],l["x2"]) <= inner_right + wall_margin_px * 5]
     if mid_h:
-        # y座標を丸めてヒストグラム（10px単位）
         from collections import Counter
         bucket_size = max(5, int(height_px * 0.03))
         buckets = Counter(int((l["y1"]+l["y2"])/2 / bucket_size) for l in mid_h)
         best_bucket = max(buckets, key=buckets.get)
         floor_line_y = best_bucket * bucket_size
-        floor_line_ratio = (floor_line_y - eave_y) / height_px  # 0=軒, 1=地盤
-        # 1F高さ = 地盤から境界線まで（下から見て）
+        # サニティチェック: 境界は建物高さの30%〜75%の間
+        fl_ratio_raw = (floor_line_y - eave_y) / height_px
+        fl_ratio = max(0.30, min(0.75, fl_ratio_raw))
+        floor_line_y = eave_y + fl_ratio * height_px
+        floor_line_ratio = fl_ratio
         floor1_h_m = round((ground_y - floor_line_y) * m_per_px, 2)
     else:
-        floor_line_ratio = 0.55  # デフォルト: 軒から55%が2F, 45%が1F
+        floor_line_ratio = 0.55
         floor1_h_m = round(height_m * 0.45, 2)
 
-    # --- 窓の検出 ---
-    win_h = [l for l in h_lines
-             if eave_y < (l["y1"]+l["y2"])/2 < ground_y
-             and MIN_WIN_M <= l.get("real_m", 0) <= MAX_WIN_M]
+    # サニティチェック: 1F高さは建物全高の20%〜75%
+    floor1_h_m = max(height_m * 0.20, min(floor1_h_m, height_m * 0.75))
+    floor1_h_m = round(floor1_h_m, 2)
+
+    # ── 窓検出: 4線矩形検出 ───────────────────────────────────────────────
+    # Step1: 建物内部の小さな水平線候補（窓の上端・下端）
+    win_candidates_h = [l for l in h_lines
+                        if inner_top < (l["y1"]+l["y2"])/2 < inner_bot
+                        and MIN_WIN_M <= l.get("real_m", 0) <= MAX_WIN_M
+                        and inner_left <= min(l["x1"],l["x2"])
+                        and max(l["x1"],l["x2"]) <= inner_right]
+
+    win_candidates_h_sorted = sorted(win_candidates_h, key=lambda l: (l["y1"]+l["y2"])/2)
 
     windows = []
-    used = set()
-    win_h_sorted = sorted(win_h, key=lambda l: (l["y1"]+l["y2"])/2)
+    used_ids = set()
 
-    for i, top_line in enumerate(win_h_sorted):
-        if i in used:
+    for i, top_line in enumerate(win_candidates_h_sorted):
+        if len(windows) >= MAX_WINS:
+            break
+        if id(top_line) in used_ids:
             continue
-        ty = (top_line["y1"] + top_line["y2"]) / 2
+
+        ty  = (top_line["y1"] + top_line["y2"]) / 2
         tx1 = min(top_line["x1"], top_line["x2"])
         tx2 = max(top_line["x1"], top_line["x2"])
         tw_m = top_line.get("real_m", 0)
 
-        # 近いy座標に同じ幅の線があればペアにする（窓の上端・下端）
-        for j, bot_line in enumerate(win_h_sorted[i+1:], i+1):
-            if j in used:
+        for bot_line in win_candidates_h_sorted[i+1:]:
+            if id(bot_line) in used_ids:
                 continue
-            by = (bot_line["y1"] + bot_line["y2"]) / 2
+            by  = (bot_line["y1"] + bot_line["y2"]) / 2
             bx1 = min(bot_line["x1"], bot_line["x2"])
             bx2 = max(bot_line["x1"], bot_line["x2"])
             bw_m = bot_line.get("real_m", 0)
 
-            # ペア条件: y差が窓高さ範囲内(0.3〜2m) + 幅が近い + x位置が重なる
             dy_m = (by - ty) * m_per_px
-            if dy_m > 2.0:
+            if dy_m > MAX_WIN_H_M:
                 break
-            if dy_m < 0.2:
+            if dy_m < MIN_WIN_H_M:
                 continue
+
+            # 幅の一致チェック（15%以内）
+            if abs(tw_m - bw_m) > max(0.3, tw_m * 0.15):
+                continue
+
+            # x位置の重なりチェック（50%以上）
             overlap = min(tx2, bx2) - max(tx1, bx1)
-            if overlap < 0.3 * max(tx2-tx1, bx2-bx1, 1):
+            span    = max(tx2, bx2) - min(tx1, bx1)
+            if span <= 0 or overlap / span < 0.5:
                 continue
-            if abs(tw_m - bw_m) > 0.5:
+
+            # 【4線矩形チェック】両端に垂直線が存在するか
+            win_x1 = max(tx1, bx1)
+            win_x2 = min(tx2, bx2)
+            cx = (win_x1 + win_x2) / 2
+            has_left_v  = any(
+                abs((l["x1"]+l["x2"])/2 - win_x1) < width_px * 0.04
+                and min((l["y1"]+l["y2"])/2, l["y1"], l["y2"]) <= ty + 5
+                and max((l["y1"]+l["y2"])/2, l["y1"], l["y2"]) >= by - 5
+                for l in v_lines
+            )
+            has_right_v = any(
+                abs((l["x1"]+l["x2"])/2 - win_x2) < width_px * 0.04
+                and min((l["y1"]+l["y2"])/2, l["y1"], l["y2"]) <= ty + 5
+                and max((l["y1"]+l["y2"])/2, l["y1"], l["y2"]) >= by - 5
+                for l in v_lines
+            )
+
+            if not (has_left_v or has_right_v):
+                # 垂直線ゼロなら除外（寸法線・ハッチング除去）
                 continue
 
             # 窓確定
-            wx_px = (max(tx1,bx1) + min(tx2,bx2)) / 2  # 中心x
-            wz_px = (ty + by) / 2                        # 中心y
-            # 左端からのオフセット(m)
-            x_m = round((wx_px - left_x - (tw_m/m_per_px)/2) * m_per_px, 2)
-            x_m = max(0.0, x_m)
-            # 地面からの高さ(m)
+            x_m = round((cx - left_x) * m_per_px - tw_m / 2, 2)
+            x_m = max(0.0, min(x_m, width_m - tw_m))
             z_m = round((ground_y - by) * m_per_px, 2)
             z_m = max(0.0, z_m)
+
             windows.append({
                 "x_m": x_m,
                 "z_m": z_m,
                 "w_m": round(tw_m, 2),
                 "h_m": round(dy_m, 2),
             })
-            used.add(i)
-            used.add(j)
+            used_ids.add(id(top_line))
+            used_ids.add(id(bot_line))
             break
 
     return {
