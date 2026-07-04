@@ -390,6 +390,173 @@ def detect_face_windows_gpt(face_img: bytes, face_label_jp: str,
         return [], f"JSONパースエラー: {_e} / raw={_debug_raw}", 0
 
 # ─────────────────────────────────────────────
+#  Stage C-Slice: 輪切り（水平スライス）方式ウィンドウ検出（GPT不要）
+# ─────────────────────────────────────────────
+
+def scan_face_profile_windows(
+    region_lines: list,
+    left_x: float, right_x: float,
+    eave_y: float, ground_y: float,
+    m_per_px: float,
+    n_y_strips: int = 40,
+    n_x_bins: int = 60,
+) -> list:
+    """
+    輪切り（水平スライス）方式でウィンドウを検出。GPT不要。
+
+    設計思想（ユーザー指示に基づく）:
+    1. 排除せず全線を読み込む
+    2. 水平スライス × 垂直ビンの2Dグリッドを作成
+    3. 各セルに線の有無を記録（密度マップ）
+    4. 密度が低い（壁がない）領域 = 窓/ドア候補
+    5. 連続した低密度矩形を窓として確定（サニティフィルタ付き）
+
+    Returns:
+      [{"x_m", "z_m", "w_m", "h_m"}, ...]  ← extract_face_geometry と同形式
+    """
+    H = max(ground_y - eave_y, 1.0)
+    W = max(right_x - left_x, 1.0)
+
+    # ── ステップ1: 2Dグリッドに全線を投影 ────────────────────────────────
+    # grid[yi][xi] = 1 なら「線あり（壁）」、0 なら「線なし（空白）」
+    grid = [[0] * n_x_bins for _ in range(n_y_strips)]
+
+    for l in region_lines:
+        x1, y1 = l.get("x1", 0), l.get("y1", 0)
+        x2, y2 = l.get("x2", 0), l.get("y2", 0)
+        orient = l.get("orientation", "")
+
+        # グリッド座標変換
+        xi1 = int((x1 - left_x) / W * n_x_bins)
+        yi1 = int((y1 - eave_y) / H * n_y_strips)
+        xi2 = int((x2 - left_x) / W * n_x_bins)
+        yi2 = int((y2 - eave_y) / H * n_y_strips)
+
+        # 線分を描画（Bresenham簡易版）
+        steps = max(abs(xi2 - xi1), abs(yi2 - yi1), 1)
+        for t in range(steps + 1):
+            xi = xi1 + int((xi2 - xi1) * t / steps)
+            yi = yi1 + int((yi2 - yi1) * t / steps)
+            if 0 <= xi < n_x_bins and 0 <= yi < n_y_strips:
+                # 垂直線は強くマーク、水平線は弱くマーク
+                if orient == "vertical":
+                    # 垂直線: ±1ビン幅でマーク（壁の実在を示す）
+                    for dx in range(-1, 2):
+                        if 0 <= xi + dx < n_x_bins:
+                            grid[yi][xi + dx] = 1
+                else:
+                    # 水平線: 中央1点のみマーク（窓上端/下端）
+                    grid[yi][xi] = 1
+
+    # ── ステップ2: 建物外壁・境界は常に「壁あり」でマスク ──────────────────
+    # 左端・右端3列 → 外壁
+    for yi in range(n_y_strips):
+        for xi in range(3):
+            grid[yi][xi] = 1
+        for xi in range(n_x_bins - 3, n_x_bins):
+            grid[yi][xi] = 1
+    # 軒上部5% / 地盤下部18% → 対象外（屋根・基礎・地面）
+    for yi in range(int(n_y_strips * 0.05)):
+        for xi in range(n_x_bins):
+            grid[yi][xi] = 1
+    for yi in range(int(n_y_strips * 0.82), n_y_strips):
+        for xi in range(n_x_bins):
+            grid[yi][xi] = 1
+
+    # ── ステップ3: 各y-スライスのx方向空白ラン（=窓候補帯）を抽出 ─────────
+    def _find_gaps_in_row(row):
+        """row内の連続した0のランを返す: [(xi_start, xi_end), ...]"""
+        gaps = []
+        in_gap = False
+        gs = 0
+        for xi, v in enumerate(row):
+            if not in_gap and v == 0:
+                in_gap = True
+                gs = xi
+            elif in_gap and v != 0:
+                gaps.append((gs, xi - 1))
+                in_gap = False
+        if in_gap:
+            gaps.append((gs, len(row) - 1))
+        return gaps
+
+    slice_gaps = [_find_gaps_in_row(grid[yi]) for yi in range(n_y_strips)]
+
+    # ── ステップ4: y方向に連続するギャップを統合 → 窓矩形を生成 ───────────
+    MIN_WIN_W_FRAC = 0.04   # 建物幅の4%以上
+    MAX_WIN_W_FRAC = 0.40   # 建物幅の40%以下
+    MIN_WIN_H_FRAC = 0.06   # 建物高さの6%以上
+    MAX_WIN_H_FRAC = 0.48   # 建物高さの48%以下
+    MAX_WINS = 8
+
+    windows = []
+    used_cells = set()  # 処理済みセルを追跡
+
+    for yi_start in range(n_y_strips):
+        for gap in slice_gaps[yi_start]:
+            gx0, gx1 = gap
+            cell_key = (yi_start, gx0, gx1)
+            if cell_key in used_cells:
+                continue
+
+            # このギャップをy方向に追跡（下方向に同じギャップが続くか）
+            cur_gx0, cur_gx1 = gx0, gx1
+            yi_end = yi_start
+            for yi_next in range(yi_start + 1, n_y_strips):
+                # yi_nextで現在のx範囲と重なるギャップを探す
+                best_overlap = 0
+                best_gap = None
+                for g in slice_gaps[yi_next]:
+                    overlap = min(cur_gx1, g[1]) - max(cur_gx0, g[0])
+                    if overlap > best_overlap:
+                        best_overlap = overlap
+                        best_gap = g
+                if best_gap is None or best_overlap <= 0:
+                    break
+                # x範囲を共通部分に絞る（精度向上）
+                new_gx0 = max(cur_gx0, best_gap[0])
+                new_gx1 = min(cur_gx1, best_gap[1])
+                # x幅が急激に縮んだら追跡終了
+                if (cur_gx1 - cur_gx0) > 0 and (new_gx1 - new_gx0) < (cur_gx1 - cur_gx0) * 0.5:
+                    break
+                cur_gx0, cur_gx1 = new_gx0, new_gx1
+                yi_end = yi_next
+
+            # 処理済みとしてマーク
+            for yi in range(yi_start, yi_end + 1):
+                used_cells.add((yi, gx0, gx1))
+
+            # サイズチェック
+            w_frac = (cur_gx1 - cur_gx0 + 1) / n_x_bins
+            h_frac = (yi_end - yi_start + 1) / n_y_strips
+            if not (MIN_WIN_W_FRAC <= w_frac <= MAX_WIN_W_FRAC):
+                continue
+            if not (MIN_WIN_H_FRAC <= h_frac <= MAX_WIN_H_FRAC):
+                continue
+
+            # ピクセル座標→メートル変換
+            x_px   = left_x + cur_gx0 / n_x_bins * W
+            y_top_px = eave_y + yi_start / n_y_strips * H
+            y_bot_px = eave_y + (yi_end + 1) / n_y_strips * H
+
+            w_m = round((cur_gx1 - cur_gx0 + 1) / n_x_bins * W * m_per_px, 2)
+            h_m = round((yi_end - yi_start + 1) / n_y_strips * H * m_per_px, 2)
+            x_m = round((x_px - left_x) * m_per_px, 2)
+            z_m = round((ground_y - y_bot_px) * m_per_px, 2)
+
+            windows.append({
+                "x_m": max(0.0, x_m),
+                "z_m": max(0.0, z_m),
+                "w_m": max(0.3, w_m),
+                "h_m": max(0.3, h_m),
+            })
+            if len(windows) >= MAX_WINS:
+                return windows
+
+    return windows
+
+
+# ─────────────────────────────────────────────
 #  Stage D: 屋根タイプ判定（GPT 1回）
 # ─────────────────────────────────────────────
 
@@ -451,16 +618,23 @@ def assemble_3d(face_geometries: dict, roof_type: str, annotations_dims: dict = 
     # DrawingAnalyzerの値で上書き（最も信頼度が高い）
     ridge_height = round(eave_height + total_width * 0.15, 2)  # デフォルト（必ず定義）
     if annotations_dims:
-        if annotations_dims.get("total_width"):  total_width  = annotations_dims["total_width"]
-        if annotations_dims.get("total_depth"):  total_depth  = annotations_dims["total_depth"]
-        if annotations_dims.get("eave_height"):  eave_height  = annotations_dims["eave_height"]
-        if annotations_dims.get("ridge_height"): ridge_height = annotations_dims["ridge_height"]
+        if annotations_dims.get("total_width"):  total_width  = float(annotations_dims["total_width"])
+        if annotations_dims.get("total_depth"):  total_depth  = float(annotations_dims["total_depth"])
+        if annotations_dims.get("eave_height"):  eave_height  = float(annotations_dims["eave_height"])
+        if annotations_dims.get("ridge_height"): ridge_height = float(annotations_dims["ridge_height"])
         else: ridge_height = round(eave_height + total_width * 0.15, 2)
-    # floor1_h をeave_height変更後に比例スケール（1F高 > 軒高 バグ修正）
-    if eave_height_raw > 0 and eave_height != eave_height_raw:
-        floor1_h = round(floor1_h_raw * eave_height / eave_height_raw, 2)
-    # 最終サニティ: floor1_h は eave_height の 20%〜75% に収める
-    floor1_h = max(round(eave_height * 0.20, 2), min(round(eave_height * 0.75, 2), floor1_h))
+    # ── 1F高さ計算（改善版）──────────────────────────────────────────────────
+    # annotations_dimsがeave_heightを提供した場合: 線検出値は縮尺誤差が大きいため使わず
+    # eave_heightを基準に再計算。日本の2階建て標準比率 1F:2F ≈ 46:54 を使用。
+    if annotations_dims and annotations_dims.get("eave_height"):
+        floor1_h = round(float(eave_height) * 0.46, 2)
+    else:
+        # 線検出値を使う場合: 比例スケール（eave_heightが変わった場合のみ）
+        if eave_height_raw > 0 and abs(eave_height - eave_height_raw) > 0.1:
+            floor1_h = round(floor1_h_raw * eave_height / eave_height_raw, 2)
+    # 絶対保証サニティ: floor1_h は必ず eave_height の [30%, 65%] に収める
+    floor1_h = max(round(float(eave_height) * 0.30, 2),
+                   min(round(float(eave_height) * 0.65, 2), floor1_h))
 
     # openings 生成（各面の窓を3D座標に変換）
     openings = []
@@ -484,7 +658,7 @@ def assemble_3d(face_geometries: dict, roof_type: str, annotations_dims: dict = 
                 "type":   "窓",
             })
 
-    note = (f"線解析v2-GPT: 幅{total_width}m / 軒高{eave_height}m / "
+    note = (f"線解析v3-slice: 幅{total_width}m / 軒高{eave_height}m / "
             f"棟高{ridge_height}m / 奥行{total_depth}m / "
             f"1F高{floor1_h}m / 窓{len(openings)}個")
 
@@ -600,18 +774,33 @@ def build_3d_from_line_analysis(
                 geom["windows"] = wins
                 _cb("C", f"  {face}: DrawingAnalyzerデータ使用 → 窓{len(wins)}個")
             else:
-                _cb("C", f"  {face}: 幅{geom['width_m']}m / 高{geom['height_m']}m → GPTで窓検出中（1回）…")
+                # DrawingAnalyzerデータなし → スライス方式（輪切り）で検出
+                _cb("C", f"  {face}: 幅{geom['width_m']}m / 高{geom['height_m']}m → スライス方式で窓検出中…")
                 try:
-                    face_crop = _crop_region(img_bytes, x1r, y1r, x2r, y2r)
-                    wins, _dbg_raw, _dbg_total = detect_face_windows_gpt(
-                        face_crop, _JP.get(face, face),
-                        geom["width_m"], geom["height_m"], api_key
+                    slice_wins = scan_face_profile_windows(
+                        region_lines,
+                        geom["left_x_px"], geom["right_x_px"],
+                        geom["eave_y_px"],  geom["ground_y_px"],
+                        m_per_px,
                     )
-                    geom["windows"] = wins
-                    _cb("C", f"  {face}: GPT応答(先頭)={_dbg_raw[:120]}")
-                    _cb("C", f"  {face}: GPT検出={_dbg_total}個→サニティOK={len(wins)}個")
+                    geom["windows"] = slice_wins
+                    _cb("C", f"  {face}: スライス検出={len(slice_wins)}個")
+                    # スライス方式でも0個ならGPTを試みる（フォールバック）
+                    if len(slice_wins) == 0:
+                        _cb("C", f"  {face}: スライス0個 → GPTフォールバック…")
+                        try:
+                            face_crop = _crop_region(img_bytes, x1r, y1r, x2r, y2r)
+                            wins, _dbg_raw, _dbg_total = detect_face_windows_gpt(
+                                face_crop, _JP.get(face, face),
+                                geom["width_m"], geom["height_m"], api_key
+                            )
+                            geom["windows"] = wins
+                            _cb("C", f"  {face}: GPT応答(先頭)={_dbg_raw[:120]}")
+                            _cb("C", f"  {face}: GPT={_dbg_total}個→OK={len(wins)}個")
+                        except Exception as _gpt_ex:
+                            _cb("C", f"  {face}: GPTも失敗({_gpt_ex})→0個")
                 except Exception as ex:
-                    _cb("C", f"  {face}: GPT窓検出失敗({ex})→線ベース結果を維持")
+                    _cb("C", f"  {face}: スライス窓検出失敗({ex})")
         else:
             _cb("C", f"  {face}: {geom['error']}")
         face_geometries[face] = geom

@@ -37,3 +37,5 @@ streamlit-image-coordinates>=0.4.0
 # force redeploy 2026-07-02 17:47
 
 # force redeploy 2026-07-04 16:57
+
+# force redeploy 2026-07-04 slice-windows v3
