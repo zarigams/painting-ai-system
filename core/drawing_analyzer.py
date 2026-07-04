@@ -166,54 +166,66 @@ DRAWING_SYSTEM_PROMPT_ANNOTATED = """
 
 FLOOR_PLAN_SYSTEM_PROMPT = """
 あなたは建築平面図の読み取り専門AIです。
-平面図（間取り図）から塗装見積に必要な建物外形寸法と開口部情報を読み取り、JSONで返してください。
+1F・2F（複数階）の平面図から、各階のフットプリント（外形寸法）と開口部を読み取り、JSONで返してください。
 
-## 読み取る情報
-1. 建物外形：total_width（幅）・total_depth（奥行き）← 外壁の外側寸法
-2. 軒高・棟高（記載あれば）
-3. 各面の開口部（窓・ドア）：幅・高さ・面の左端からのX距離
+## 最重要：各階のフットプリントを個別に取得する
+日本の住宅は1階と2階で外壁の位置が異なることが多い（1Fが広く2Fが狭い）。
+必ず1F・2Fそれぞれの幅と奥行きを読み取ること。
 
 ## 出力形式（JSONのみ）
 {
   "drawing_kind": "floor_plan",
-  "total_width": 9.1,
-  "total_depth": 7.2,
   "eave_height": 6.5,
   "ridge_height": 8.7,
-  "faces": {
-    "south": {
+  "floor_footprints": [
+    {
+      "floor": 1,
+      "width": 12.9,
+      "depth": 8.5,
+      "x_offset": 0,
+      "z_offset": 0,
+      "floor_height": 3.0,
+      "openings": {
+        "south": [{"type": "窓", "width": 1.6, "height": 1.2, "x_from_left": 1.5}],
+        "north": [{"type": "窓", "width": 0.9, "height": 1.2, "x_from_left": 2.0}],
+        "east":  [],
+        "west":  [{"type": "ドア", "width": 0.9, "height": 2.1, "x_from_left": 1.0}]
+      }
+    },
+    {
+      "floor": 2,
       "width": 9.1,
-      "openings": [
-        {"type": "窓", "width": 1.6, "height": 1.2, "x_from_left": 1.2},
-        {"type": "窓", "width": 1.6, "height": 1.2, "x_from_left": 4.5},
-        {"type": "ドア", "width": 0.9, "height": 2.1, "x_from_left": 7.0}
-      ]
-    },
-    "north": {
-      "width": 9.1,
-      "openings": [
-        {"type": "窓", "width": 1.6, "height": 1.2, "x_from_left": 2.0}
-      ]
-    },
-    "east": {
-      "width": 7.2,
-      "openings": [
-        {"type": "窓", "width": 0.9, "height": 1.2, "x_from_left": 2.5}
-      ]
-    },
-    "west": {
-      "width": 7.2,
-      "openings": []
+      "depth": 7.2,
+      "x_offset": 1.2,
+      "z_offset": 0.5,
+      "floor_height": 3.0,
+      "openings": {
+        "south": [{"type": "窓", "width": 1.6, "height": 1.2, "x_from_left": 0.8}],
+        "north": [],
+        "east":  [{"type": "窓", "width": 0.9, "height": 1.2, "x_from_left": 1.5}],
+        "west":  []
+      }
     }
-  },
-  "notes": "寄棟屋根・南面バルコニーあり"
+  ],
+  "notes": "2階が南東に寄っている。1階南面にバルコニーあり"
 }
+
+## フィールド説明
+- floor_footprints: 各階の情報リスト（1F・2F・3Fなど）
+- floor: 階数（1=1F, 2=2F）
+- width: その階の東西方向外壁外側寸法（m）
+- depth: その階の南北方向外壁外側寸法（m）
+- x_offset: 1Fの西端を基準とした、この階の西端のずれ（m、東方向が正）
+- z_offset: 1Fの南端を基準とした、この階の南端のずれ（m、北方向が正）
+- floor_height: この階の天井高（m、不明なら2.7〜3.0を設定）
+- openings: 各面の開口部（x_from_left=その面の左端からの距離m）
 
 ## 注意
 - 寸法はすべてメートル（mmで記載されている場合は÷1000）
-- x_from_left: 各面の左端（西端=南面左端、南端=東面左端）からの距離m
-- 平面図に軒高・棟高の記載がなければ null を返す
-- 開口部の z_from_floor（床からの高さ）は平面図からは読み取れないため省略
+- 平面図が1枚だけの場合はその階のみ返す（floor_footprints に1要素）
+- 1F・2Fそれぞれの図面が渡された場合は必ず2要素返す
+- 1Fと2Fの幅・奥行きが同じ場合でも両方返す
+- 軒高・棟高の記載がなければ null を返す
 - JSONのみ返すこと（説明文不要）
 """
 

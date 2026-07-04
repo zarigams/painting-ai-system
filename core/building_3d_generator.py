@@ -220,7 +220,7 @@ def _faces_to_openings(faces: dict, bw: float, bd: float, eave_h: float) -> list
     return openings
 
 
-def build_3d_from_annotations(annotations: list, roof_type: str = "寄棟", faces: dict = None) -> dict:
+def build_3d_from_annotations(annotations: list, roof_type: str = "寄棟", faces: dict = None, floor_footprints: list = None) -> dict:
     """
     DrawingAnalyzerが抽出したannotationsから建物3Dデータを構築する。
     GPTへの追加APIコール不要。STEP2の正確な抽出値を使用。
@@ -279,12 +279,8 @@ def build_3d_from_annotations(annotations: list, roof_type: str = "寄棟", face
         },
         "eave_overhang": 0.6,
         "stories": stories,
-        "walls": [
-            {"label": "南壁", "x": 0,           "y": 0,           "z": 0, "width": total_width, "height": eave_height, "depth": 0.2},
-            {"label": "北壁", "x": 0,           "y": total_depth, "z": 0, "width": total_width, "height": eave_height, "depth": 0.2},
-            {"label": "西壁", "x": 0,           "y": 0,           "z": 0, "width": 0.2,         "height": eave_height, "depth": total_depth},
-            {"label": "東壁", "x": total_width, "y": 0,           "z": 0, "width": 0.2,         "height": eave_height, "depth": total_depth},
-        ],
+        "walls": [],
+        "floor_footprints": floor_footprints or [],
         "roof": {
             "type":         roof_type,
             "eave_height":  eave_height,
@@ -389,37 +385,72 @@ const EH=Math.min(Math.max(_EH,2.0),8.0);
 const RH=Math.min(Math.max(_RH,EH+0.5),EH+6.0);
 const OH=Math.min(Math.max(BUILDING.eave_overhang||0.6,0.2),1.5);
 const OX=-BW/2,OZ=-BD/2;
-// 外壁
+// ── 外壁（複数フットプリント対応）────────────────────────────────
+const footprints=BUILDING.floor_footprints||[];
 const walls=BUILDING.walls||[];
-if(walls.length===0){
-  addBox(OX,0,OZ,BW,EH,0.2,'#c8b89a','南壁','幅'+BW+'m × 高'+EH+'m');
-  addBox(OX,0,OZ+BD-0.2,BW,EH,0.2,'#c8b89a','北壁','幅'+BW+'m × 高'+EH+'m');
-  addBox(OX,0,OZ+0.2,0.2,EH,BD-0.4,'#c0b090','西壁','奥行'+BD+'m × 高'+EH+'m');
-  addBox(OX+BW-0.2,0,OZ+0.2,0.2,EH,BD-0.4,'#c0b090','東壁','奥行'+BD+'m × 高'+EH+'m');
+function drawFloorBox(fx,fy,fw,fd,fh,yBase,label){
+  // 4面の壁を描画
+  addBox(fx,yBase,fy,fw,fh,0.2,'#c8b89a',label+'南壁','幅'+fw.toFixed(1)+'m × 高'+fh.toFixed(1)+'m');
+  addBox(fx,yBase,fy+fd-0.2,fw,fh,0.2,'#c8b89a',label+'北壁','幅'+fw.toFixed(1)+'m × 高'+fh.toFixed(1)+'m');
+  addBox(fx,yBase,fy+0.2,0.2,fh,fd-0.4,'#c0b090',label+'西壁','奥行'+fd.toFixed(1)+'m × 高'+fh.toFixed(1)+'m');
+  addBox(fx+fw-0.2,yBase,fy+0.2,0.2,fh,fd-0.4,'#c0b090',label+'東壁','奥行'+fd.toFixed(1)+'m × 高'+fh.toFixed(1)+'m');
+  // 階境帯（その階の上端）
+  if(yBase>0){
+    addBox(fx-0.05,yBase,fy-0.05,fw+0.1,0.08,fd+0.1,'#9a8870',label+'帯','高さ'+yBase.toFixed(2)+'m');
+  }
+}
+
+if(footprints.length>=2){
+  // 複数フットプリント：各階を積み上げ
+  let yBase=0;
+  footprints.forEach((fp,idx)=>{
+    const fw=Math.min(Math.max(fp.width||BW,2),40);
+    const fd=Math.min(Math.max(fp.depth||BD,2),40);
+    const fh=Math.min(Math.max(fp.floor_height||3.0,2.0),5.0);
+    const xOff=(fp.x_offset||0);
+    const zOff=(fp.z_offset||0);
+    const fx=OX+xOff;
+    const fz=OZ+zOff;
+    drawFloorBox(fx,fz,fw,fd,fh,yBase,(idx+1)+'F');
+    // 床スラブ（1F以外）
+    if(idx>0){
+      addBox(fx,yBase-0.1,fz,fw,0.1,fd,'#888888',(idx+1)+'F床','');
+    }
+    yBase+=fh;
+  });
+  // 基礎
+  const fp0=footprints[0];
+  const bw0=Math.min(Math.max(fp0.width||BW,2),40);
+  const bd0=Math.min(Math.max(fp0.depth||BD,2),40);
+  addBox(OX+(fp0.x_offset||0),-0.3,OZ+(fp0.z_offset||0),bw0,0.3,bd0,'#888888','基礎','');
+}else if(walls.length===0){
+  // シングルフットプリント（従来通り）
+  drawFloorBox(OX,OZ,BW,BD,EH,0,'');
+  addBox(OX,-0.3,OZ,BW,0.3,BD,'#888888','基礎',BW+'m × '+BD+'m');
 }else{
   walls.forEach(w=>{
     addBox(OX+(w.x||0),w.z||0,OZ+(w.y||0),w.width||BW,w.height||EH,w.depth||0.2,
-      w.color||'#c8b89a',w.label||'壁','幅'+(w.width||0).toFixed(1)+'m × 高'+(w.height||0).toFixed(1)+'m');});}
-// 基礎・床
-const floors=BUILDING.floors||[];
-if(floors.length===0){addBox(OX,-0.3,OZ,BW,0.3,BD,'#888888','基礎',BW+'m × '+BD+'m');}
-else{floors.forEach(f=>{addBox(OX+(f.x||0),(f.z||-0.3),OZ+(f.y||0),f.width||BW,f.height||0.3,f.depth||BD,'#888888',f.label||'基礎','');});}
-// 階境（1F/2F区切り帯）
-const stories=BUILDING.stories||[];
-stories.forEach(s=>{
-  const sh=parseFloat(s.floor_height||s.height||0);
-  if(sh>0.5&&sh<EH-0.1){
-    addBox(OX-0.05,sh,OZ-0.05,BW+0.1,0.1,BD+0.1,'#9a8870',s.label||'階境','高さ'+sh.toFixed(2)+'m');
-  }
-});
-// 屋根
+      w.color||'#c8b89a',w.label||'壁','幅'+(w.width||0).toFixed(1)+'m × 高'+(w.height||0).toFixed(1)+'m');});
+  addBox(OX,-0.3,OZ,BW,0.3,BD,'#888888','基礎',BW+'m × '+BD+'m');
+}
+// 屋根（複数フットプリント時は最上階の外形・累積高さを使用）
+let roofBW=BW,roofBD=BD,roofOX=OX,roofOZ=OZ,roofBaseH=EH;
+if(footprints.length>=2){
+  const lastFP=footprints[footprints.length-1];
+  roofBW=Math.min(Math.max(lastFP.width||BW,2),40);
+  roofBD=Math.min(Math.max(lastFP.depth||BD,2),40);
+  roofOX=-roofBW/2+(lastFP.x_offset||0);
+  roofOZ=-BD/2+(lastFP.z_offset||0);  // 1F南端基準
+  // 累積高さ
+  roofBaseH=footprints.reduce((s,fp)=>s+Math.min(Math.max(fp.floor_height||3.0,2),5),0);
+}
 const roof=BUILDING.roof||{};
-const rEH=Math.min(Math.max(roof.eave_height||EH,2),8);
+const rEH=Math.min(Math.max(roof.eave_height||roofBaseH,2),14);
 const _rRH_raw=roof.ridge_height||RH;
 const rRH=_rRH_raw>rEH?_rRH_raw:rEH+2.5;
 const rtype=roof.type||'寄棟';
 if(rtype==='陸屋根'){
-  addBox(OX-OH,rEH,OZ-OH,BW+OH*2,0.3,BD+OH*2,'#666666','屋根（陸屋根）',BW+'m × '+BD+'m');
+  addBox(roofOX-OH,rEH,roofOZ-OH,roofBW+OH*2,0.3,roofBD+OH*2,'#666666','屋根（陸屋根）',roofBW+'m × '+roofBD+'m');
 }else{
   const matR=new THREE.MeshLambertMaterial({color:0x3a4d5c,side:THREE.DoubleSide});
   const matG=new THREE.MeshLambertMaterial({color:0x2d3d4a,side:THREE.DoubleSide});
@@ -439,33 +470,33 @@ if(rtype==='陸屋根'){
     geo.computeVertexNormals();
     scene.add(new THREE.Mesh(geo,mat||matG));};
   const roofLabel='屋根（'+rtype+'）',roofDim='軒高'+rEH+'m 棟高'+rRH+'m 軒の出'+OH+'m';
-  const midZ=OZ+BD/2,midX=OX+BW/2;
+  const midZ=roofOZ+roofBD/2,midX=roofOX+roofBW/2;
   if(rtype==='片流れ'){
-    addQuad([OX-OH,rEH,OZ-OH],[OX+BW+OH,rEH,OZ-OH],[OX+BW+OH,rRH,OZ+BD+OH],[OX-OH,rRH,OZ+BD+OH],roofLabel,roofDim);
-    addTri3([OX-OH,rEH,OZ-OH],[OX-OH,rEH,OZ+BD+OH],[OX-OH,rRH,OZ+BD+OH],matG);
-    addTri3([OX+BW+OH,rEH,OZ-OH],[OX+BW+OH,rRH,OZ+BD+OH],[OX+BW+OH,rEH,OZ+BD+OH],matG);
+    addQuad([roofOX-OH,rEH,roofOZ-OH],[roofOX+roofBW+OH,rEH,roofOZ-OH],[roofOX+roofBW+OH,rRH,roofOZ+roofBD+OH],[roofOX-OH,rRH,roofOZ+roofBD+OH],roofLabel,roofDim);
+    addTri3([roofOX-OH,rEH,roofOZ-OH],[roofOX-OH,rEH,roofOZ+roofBD+OH],[roofOX-OH,rRH,roofOZ+roofBD+OH],matG);
+    addTri3([roofOX+roofBW+OH,rEH,roofOZ-OH],[roofOX+roofBW+OH,rRH,roofOZ+roofBD+OH],[roofOX+roofBW+OH,rEH,roofOZ+roofBD+OH],matG);
   }else if(rtype==='寄棟'){
-    const ridgeX1=OX+BW*0.25,ridgeX2=OX+BW*0.75;
-    addQuad([OX-OH,rEH,OZ-OH],[OX+BW+OH,rEH,OZ-OH],[ridgeX2,rRH,midZ],[ridgeX1,rRH,midZ],roofLabel,roofDim);
-    addQuad([ridgeX1,rRH,midZ],[ridgeX2,rRH,midZ],[OX+BW+OH,rEH,OZ+BD+OH],[OX-OH,rEH,OZ+BD+OH],roofLabel,roofDim);
-    addTri3([OX-OH,rEH,OZ-OH],[OX-OH,rEH,OZ+BD+OH],[ridgeX1,rRH,midZ],matG);
-    addTri3([OX+BW+OH,rEH,OZ-OH],[ridgeX2,rRH,midZ],[OX+BW+OH,rEH,OZ+BD+OH],matG);
+    const ridgeX1=roofOX+roofBW*0.25,ridgeX2=roofOX+roofBW*0.75;
+    addQuad([roofOX-OH,rEH,roofOZ-OH],[roofOX+roofBW+OH,rEH,roofOZ-OH],[ridgeX2,rRH,midZ],[ridgeX1,rRH,midZ],roofLabel,roofDim);
+    addQuad([ridgeX1,rRH,midZ],[ridgeX2,rRH,midZ],[roofOX+roofBW+OH,rEH,roofOZ+roofBD+OH],[roofOX-OH,rEH,roofOZ+roofBD+OH],roofLabel,roofDim);
+    addTri3([roofOX-OH,rEH,roofOZ-OH],[roofOX-OH,rEH,roofOZ+roofBD+OH],[ridgeX1,rRH,midZ],matG);
+    addTri3([roofOX+roofBW+OH,rEH,roofOZ-OH],[ridgeX2,rRH,midZ],[roofOX+roofBW+OH,rEH,roofOZ+roofBD+OH],matG);
   }else{
-    addQuad([OX-OH,rEH,OZ-OH],[OX+BW+OH,rEH,OZ-OH],[OX+BW+OH,rRH,midZ],[OX-OH,rRH,midZ],roofLabel,roofDim);
-    addQuad([OX-OH,rRH,midZ],[OX+BW+OH,rRH,midZ],[OX+BW+OH,rEH,OZ+BD+OH],[OX-OH,rEH,OZ+BD+OH],roofLabel,roofDim);
-    addTri3([OX-OH,rEH,OZ-OH],[OX-OH,rEH,OZ+BD+OH],[OX-OH,rRH,midZ],matG);
-    addTri3([OX+BW+OH,rEH,OZ-OH],[OX+BW+OH,rRH,midZ],[OX+BW+OH,rEH,OZ+BD+OH],matG);
+    addQuad([roofOX-OH,rEH,roofOZ-OH],[roofOX+roofBW+OH,rEH,roofOZ-OH],[roofOX+roofBW+OH,rRH,midZ],[roofOX-OH,rRH,midZ],roofLabel,roofDim);
+    addQuad([roofOX-OH,rRH,midZ],[roofOX+roofBW+OH,rRH,midZ],[roofOX+roofBW+OH,rEH,roofOZ+roofBD+OH],[roofOX-OH,rEH,roofOZ+roofBD+OH],roofLabel,roofDim);
+    addTri3([roofOX-OH,rEH,roofOZ-OH],[roofOX-OH,rEH,roofOZ+roofBD+OH],[roofOX-OH,rRH,midZ],matG);
+    addTri3([roofOX+roofBW+OH,rEH,roofOZ-OH],[roofOX+roofBW+OH,rRH,midZ],[roofOX+roofBW+OH,rEH,roofOZ+roofBD+OH],matG);
   }
   // 軒天（軒裏）
-  addBox(OX-OH,rEH-0.06,OZ-OH,BW+OH*2,0.06,OH,'#d4c8b0','軒天（南）','');
-  addBox(OX-OH,rEH-0.06,OZ+BD,BW+OH*2,0.06,OH,'#d4c8b0','軒天（北）','');
-  addBox(OX-OH,rEH-0.06,OZ,OH,0.06,BD,'#d4c8b0','軒天（西）','');
-  addBox(OX+BW,rEH-0.06,OZ,OH,0.06,BD,'#d4c8b0','軒天（東）','');
+  addBox(roofOX-OH,rEH-0.06,roofOZ-OH,roofBW+OH*2,0.06,OH,'#d4c8b0','軒天（南）','');
+  addBox(roofOX-OH,rEH-0.06,roofOZ+roofBD,roofBW+OH*2,0.06,OH,'#d4c8b0','軒天（北）','');
+  addBox(roofOX-OH,rEH-0.06,roofOZ,OH,0.06,roofBD,'#d4c8b0','軒天（西）','');
+  addBox(roofOX+roofBW,rEH-0.06,roofOZ,OH,0.06,roofBD,'#d4c8b0','軒天（東）','');
   // 鼻隠し（破風・fascia）
-  addBox(OX-OH,rEH-0.32,OZ-OH-0.05,BW+OH*2,0.28,0.05,'#7a6345','鼻隠し（南）','');
-  addBox(OX-OH,rEH-0.32,OZ+BD+OH,BW+OH*2,0.28,0.05,'#7a6345','鼻隠し（北）','');
-  addBox(OX-OH-0.05,rEH-0.32,OZ-OH,0.05,0.28,BD+OH*2,'#7a6345','鼻隠し（西）','');
-  addBox(OX+BW+OH,rEH-0.32,OZ-OH,0.05,0.28,BD+OH*2,'#7a6345','鼻隠し（東）','');
+  addBox(roofOX-OH,rEH-0.32,roofOZ-OH-0.05,roofBW+OH*2,0.28,0.05,'#7a6345','鼻隠し（南）','');
+  addBox(roofOX-OH,rEH-0.32,roofOZ+roofBD+OH,roofBW+OH*2,0.28,0.05,'#7a6345','鼻隠し（北）','');
+  addBox(roofOX-OH-0.05,rEH-0.32,roofOZ-OH,0.05,0.28,roofBD+OH*2,'#7a6345','鼻隠し（西）','');
+  addBox(roofOX+roofBW+OH,rEH-0.32,roofOZ-OH,0.05,0.28,roofBD+OH*2,'#7a6345','鼻隠し（東）','');
 }
 // 開口部（窓枠+ガラス）各面対応
 const openings=BUILDING.openings||[];

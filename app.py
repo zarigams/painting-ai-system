@@ -1530,7 +1530,8 @@ elif st.session_state.step == 2:
                                                 from core.building_3d_generator import build_3d_from_annotations
                                                 _m1_roof_sel = st.session_state.get("m1_roof_sel", "寄棟")
                                                 _faces1 = st.session_state.get("drawing_data", {}).get("faces")
-                                                _bldg_data = build_3d_from_annotations(_m1_ann, roof_type=_m1_roof_sel, faces=_faces1)
+                                                _fp1 = (st.session_state.get("floor_plan_data") or {}).get("floor_footprints") or []
+                                                _bldg_data = build_3d_from_annotations(_m1_ann, roof_type=_m1_roof_sel, faces=_faces1, floor_footprints=_fp1)
                                                 if "error" in _bldg_data:
                                                     st.error(f"解析エラー: {_bldg_data['error']}")
                                                 else:
@@ -1604,7 +1605,8 @@ elif st.session_state.step == 2:
                                                             if _ann2:
                                                                 from core.building_3d_generator import build_3d_from_annotations
                                                                 _faces2 = st.session_state.get("drawing_data", {}).get("faces")
-                                                                _ann_data = build_3d_from_annotations(_ann2, faces=_faces2)
+                                                                _fp2 = (st.session_state.get("floor_plan_data") or {}).get("floor_footprints") or []
+                                                                _ann_data = build_3d_from_annotations(_ann2, faces=_faces2, floor_footprints=_fp2)
                                                                 if "error" not in _ann_data:
                                                                     _dim_fix = _ann_data["dimensions"]
                                                                     # ★補正前の幅を保存（openingsスケーリング用）
