@@ -363,6 +363,8 @@ def detect_face_windows_gpt(face_img: bytes, face_label_jp: str,
         temperature=0.0,
     )
     raw = resp.choices[0].message.content.strip()
+    # デバッグ用: 生レスポンスを返却に含める
+    _debug_raw = raw[:300]
     try:
         if "```" in raw:
             raw = raw.split("```")[1]
@@ -382,9 +384,10 @@ def detect_face_windows_gpt(face_img: bytes, face_label_jp: str,
             if 0.3 <= ww <= 3.0 and 0.3 <= wh <= 2.5 and 0 <= x < width_m and 0 <= z < height_m:
                 result.append({"x_m": round(x,2), "z_m": round(z,2),
                                 "w_m": round(ww,2), "h_m": round(wh,2)})
-        return result
-    except Exception:
-        return []
+        # GPTの生応答（デバッグ）と検出前の窓数もタプルで返す
+        return result, _debug_raw, len(wins)
+    except Exception as _e:
+        return [], f"JSONパースエラー: {_e} / raw={_debug_raw}", 0
 
 # ─────────────────────────────────────────────
 #  Stage D: 屋根タイプ判定（GPT 1回）
@@ -576,12 +579,13 @@ def build_3d_from_line_analysis(
             _cb("C", f"  {face}: 幅{geom['width_m']}m / 高{geom['height_m']}m → GPTで窓検出中（1回）…")
             try:
                 face_crop = _crop_region(img_bytes, x1r, y1r, x2r, y2r)
-                wins = detect_face_windows_gpt(
+                wins, _dbg_raw, _dbg_total = detect_face_windows_gpt(
                     face_crop, _JP.get(face, face),
                     geom["width_m"], geom["height_m"], api_key
                 )
                 geom["windows"] = wins
-                _cb("C", f"  {face}: 窓{len(wins)}個検出")
+                _cb("C", f"  {face}: GPT応答(先頭)={_dbg_raw[:120]}")
+                _cb("C", f"  {face}: GPT検出={_dbg_total}個→サニティOK={len(wins)}個")
             except Exception as ex:
                 _cb("C", f"  {face}: GPT窓検出失敗({ex})→線ベース結果を維持")
         else:
