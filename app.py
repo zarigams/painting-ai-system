@@ -372,7 +372,7 @@ with st.sidebar:
             del st.session_state[k]
         st.rerun()
 
-st.title("🏠 AI塗装積算システム")
+st.title("🏠 AI塗装積算システム")  # v20260704
 
 # ─── 単価設定画面（ボタン押下時に表示）───────────────────────
 if st.session_state.get("show_price_settings", False):
