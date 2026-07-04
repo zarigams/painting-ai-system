@@ -312,6 +312,72 @@ def extract_face_geometry(lines: list, m_per_px: float, face_h_px: int) -> dict:
     }
 
 
+
+# ─────────────────────────────────────────────
+#  Stage C-GPT: 面ごとの窓検出（GPT）
+# ─────────────────────────────────────────────
+
+def detect_face_windows_gpt(face_img: bytes, face_label_jp: str,
+                             width_m: float, height_m: float, api_key: str) -> list:
+    """
+    面クロップ画像からGPT-4o Visionで窓・ドアの位置を検出。
+    線ベース検出の代替。各面1回のGPT呼び出し。
+
+    Returns: [{"x_m", "z_m", "w_m", "h_m"}, ...]
+      x_m: 建物左端からの距離（m）
+      z_m: 地面からの高さ（m）
+    """
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
+    b64 = base64.b64encode(face_img).decode()
+
+    prompt = f"""この建物の{face_label_jp}立面図を見て、すべての窓・ドアの位置を教えてください。
+
+建物の実寸: 幅{width_m}m × 高さ{height_m}m
+
+各開口部を、建物左端からの距離(x_m)・地面からの高さ(z_m)・幅(w_m)・高さ(h_m) をメートル単位で返してください。
+窓が見当たらない場合は空配列にしてください。
+
+```json
+{{"windows": [
+  {{"x_m": 1.2, "z_m": 3.5, "w_m": 1.5, "h_m": 1.2, "type": "窓"}},
+  {{"x_m": 3.0, "z_m": 0.2, "w_m": 0.9, "h_m": 2.0, "type": "ドア"}}
+]}}
+```"""
+
+    resp = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"}},
+        ]}],
+        max_tokens=600,
+        temperature=0.0,
+    )
+    raw = resp.choices[0].message.content.strip()
+    try:
+        if "```" in raw:
+            raw = raw.split("```")[1]
+            if raw.startswith("json"): raw = raw[4:]
+        if not raw.startswith("{"):
+            si = raw.find("{")
+            if si != -1: raw = raw[si:raw.rfind("}")+1]
+        data = json.loads(raw)
+        wins = data.get("windows", [])
+        result = []
+        for w in wins:
+            x  = float(w.get("x_m", 0))
+            z  = float(w.get("z_m", 0))
+            ww = float(w.get("w_m", 0))
+            wh = float(w.get("h_m", 0))
+            # サニティチェック（建物範囲内・現実的なサイズ）
+            if 0.3 <= ww <= 3.0 and 0.3 <= wh <= 2.5 and 0 <= x < width_m and 0 <= z < height_m:
+                result.append({"x_m": round(x,2), "z_m": round(z,2),
+                                "w_m": round(ww,2), "h_m": round(wh,2)})
+        return result
+    except Exception:
+        return []
+
 # ─────────────────────────────────────────────
 #  Stage D: 屋根タイプ判定（GPT 1回）
 # ─────────────────────────────────────────────
@@ -490,18 +556,29 @@ def build_3d_from_line_analysis(
     m_per_px  = ld.get("scale_m_per_px", 0.001)
     _cb("B", f"線検出完了: {len(all_lines)}本 / m_per_px={m_per_px:.5f}")
 
-    # --- Stage C: 面ごとに外形抽出 ---
+    # --- Stage C: 面ごとに外形抽出 + GPTで窓検出 ---
+    _JP = {"south":"南","north":"北","east":"東","west":"西"}
     face_geometries = {}
     for face, (x1r, y1r, x2r, y2r) in face_regions.items():
         _cb("C", f"{face}面: 線座標から外形を計算中…")
         region_lines = _lines_in_region(all_lines, x1r, y1r, x2r, y2r, img_w, img_h)
         face_h_px = int((y2r - y1r) * img_h)
         geom = extract_face_geometry(region_lines, m_per_px, face_h_px)
-        face_geometries[face] = geom
         if "error" not in geom:
-            _cb("C", f"  {face}: 幅{geom['width_m']}m / 高{geom['height_m']}m / 窓{len(geom['windows'])}個")
+            _cb("C", f"  {face}: 幅{geom['width_m']}m / 高{geom['height_m']}m → GPTで窓検出中（1回）…")
+            try:
+                face_crop = _crop_region(img_bytes, x1r, y1r, x2r, y2r)
+                wins = detect_face_windows_gpt(
+                    face_crop, _JP.get(face, face),
+                    geom["width_m"], geom["height_m"], api_key
+                )
+                geom["windows"] = wins
+                _cb("C", f"  {face}: 窓{len(wins)}個検出")
+            except Exception as ex:
+                _cb("C", f"  {face}: GPT窓検出失敗({ex})→線ベース結果を維持")
         else:
             _cb("C", f"  {face}: {geom['error']}")
+        face_geometries[face] = geom
 
     # --- Stage D: 屋根タイプ ---
     if roof_type is None:
