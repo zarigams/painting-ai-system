@@ -443,17 +443,24 @@ def assemble_3d(face_geometries: dict, roof_type: str, annotations_dims: dict = 
     # 寸法の決定（南面・北面の幅が建物幅, 東面・西面の幅が建物奥行き）
     total_width = s.get("width_m") or n.get("width_m") or 10.0
     total_depth = e.get("width_m") or w.get("width_m") or round(total_width * 0.72, 2)
-    eave_height = s.get("height_m") or n.get("height_m") or e.get("height_m") or 6.0
-    floor1_h    = s.get("floor1_h_m") or n.get("floor1_h_m") or round(eave_height * 0.45, 2)
+    eave_height_raw = s.get("height_m") or n.get("height_m") or e.get("height_m") or 6.0
+    floor1_h_raw    = s.get("floor1_h_m") or n.get("floor1_h_m") or round(eave_height_raw * 0.45, 2)
+    eave_height = eave_height_raw
+    floor1_h    = floor1_h_raw
 
     # DrawingAnalyzerの値で上書き（最も信頼度が高い）
+    ridge_height = round(eave_height + total_width * 0.15, 2)  # デフォルト（必ず定義）
     if annotations_dims:
-        if annotations_dims.get("total_width"):  total_width = annotations_dims["total_width"]
-        if annotations_dims.get("total_depth"):  total_depth = annotations_dims["total_depth"]
-        if annotations_dims.get("eave_height"):  eave_height = annotations_dims["eave_height"]
+        if annotations_dims.get("total_width"):  total_width  = annotations_dims["total_width"]
+        if annotations_dims.get("total_depth"):  total_depth  = annotations_dims["total_depth"]
+        if annotations_dims.get("eave_height"):  eave_height  = annotations_dims["eave_height"]
         if annotations_dims.get("ridge_height"): ridge_height = annotations_dims["ridge_height"]
-    else:
-        ridge_height = round(eave_height + total_width * 0.15, 2)
+        else: ridge_height = round(eave_height + total_width * 0.15, 2)
+    # floor1_h をeave_height変更後に比例スケール（1F高 > 軒高 バグ修正）
+    if eave_height_raw > 0 and eave_height != eave_height_raw:
+        floor1_h = round(floor1_h_raw * eave_height / eave_height_raw, 2)
+    # 最終サニティ: floor1_h は eave_height の 20%〜75% に収める
+    floor1_h = max(round(eave_height * 0.20, 2), min(round(eave_height * 0.75, 2), floor1_h))
 
     # openings 生成（各面の窓を3D座標に変換）
     openings = []

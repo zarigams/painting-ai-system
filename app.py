@@ -1924,10 +1924,37 @@ elif st.session_state.step == 2:
                                                 _m4_status_area.info(f"{icon} **Stage {stage}**: {msg}")
                                                 _m4_log_area.caption(" → ".join(_m4_all_logs[-3:]))
                                             # DrawingAnalyzerのfacesデータを取得（窓検出に使用）
+                                            # DrawingAnalyzerのfacesデータ取得（なければ自動実行）
                                             _m4_faces_data = None
                                             _dd = st.session_state.get("drawing_data") or {}
                                             if isinstance(_dd, dict) and _dd.get("faces"):
                                                 _m4_faces_data = _dd["faces"]
+                                                _cb_has_openings = any(
+                                                    bool(v.get("openings")) if isinstance(v, dict) else False
+                                                    for v in _m4_faces_data.values()
+                                                )
+                                            else:
+                                                _cb_has_openings = False
+                                            # facesがない or openingsが全面空の場合→DrawingAnalyzerを自動実行
+                                            if not _cb_has_openings and _m4_orig:
+                                                _m4_status_area.info("🔍 DrawingAnalyzerを自動実行中（窓データ取得）…")
+                                                try:
+                                                    from core.drawing_analyzer import DrawingAnalyzer
+                                                    _da = DrawingAnalyzer(api_key=_m4_key)
+                                                    _da_result = _da.analyze(_m4_orig)
+                                                    if _da_result and _da_result.get("faces"):
+                                                        _m4_faces_data = _da_result["faces"]
+                                                        st.session_state["drawing_data"] = _da_result
+                                                        _m4_status_area.info(f"✅ DrawingAnalyzer完了: faces={list(_m4_faces_data.keys())}")
+                                                    if not _m4_ann_dims and _da_result:
+                                                        from core.building_3d_generator import build_3d_from_annotations
+                                                        _da_ann = _da_result.get("annotations") or []
+                                                        if _da_ann:
+                                                            _da_tmp = build_3d_from_annotations(_da_ann)
+                                                            if "error" not in _da_tmp:
+                                                                _m4_ann_dims = _da_tmp.get("dimensions")
+                                                except Exception as _da_e:
+                                                    _m4_status_area.warning(f"⚠️ DrawingAnalyzer自動実行失敗: {_da_e}")
                                             try:
                                                 _m4_result = build_3d_from_line_analysis(
                                                     img_bytes        = _m4_orig,
