@@ -390,159 +390,151 @@ def detect_face_windows_gpt(face_img: bytes, face_label_jp: str,
         return [], f"JSONパースエラー: {_e} / raw={_debug_raw}", 0
 
 # ─────────────────────────────────────────────
-#  Stage C-Slice: 輪切り（水平スライス）方式ウィンドウ検出（GPT不要）
+#  Stage C-Slice: 輪切り（点雲→スライス）方式（GPT不要）
 # ─────────────────────────────────────────────
 
-def scan_face_profile_windows(
-    region_lines: list,
-    left_x: float, right_x: float,
-    eave_y: float, ground_y: float,
-    m_per_px: float,
-    n_y_strips: int = 40,
-    n_x_bins: int = 60,
-) -> list:
+def _lines_to_points(lines: list, px_interval: float = 3.0) -> list:
     """
-    輪切り（水平スライス）方式でウィンドウを検出。GPT不要。
-
-    設計思想（ユーザー指示に基づく）:
-    1. 排除せず全線を読み込む
-    2. 水平スライス × 垂直ビンの2Dグリッドを作成
-    3. 各セルに線の有無を記録（密度マップ）
-    4. 密度が低い（壁がない）領域 = 窓/ドア候補
-    5. 連続した低密度矩形を窓として確定（サニティフィルタ付き）
-
-    Returns:
-      [{"x_m", "z_m", "w_m", "h_m"}, ...]  ← extract_face_geometry と同形式
+    ステップ1: 全線分をポイントクラウドへ変換。
+    各線を px_interval 画素おきにサンプリングし (x,y) タプルのリストを返す。
     """
-    H = max(ground_y - eave_y, 1.0)
-    W = max(right_x - left_x, 1.0)
-
-    # ── ステップ1: 2Dグリッドに全線を投影 ────────────────────────────────
-    # grid[yi][xi] = 1 なら「線あり（壁）」、0 なら「線なし（空白）」
-    grid = [[0] * n_x_bins for _ in range(n_y_strips)]
-
-    for l in region_lines:
+    points = []
+    for l in lines:
         x1, y1 = l.get("x1", 0), l.get("y1", 0)
         x2, y2 = l.get("x2", 0), l.get("y2", 0)
-        orient = l.get("orientation", "")
+        length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+        n_pts  = max(2, int(length / px_interval))
+        for i in range(n_pts + 1):
+            t = i / n_pts
+            points.append((x1 + t * (x2 - x1), y1 + t * (y2 - y1)))
+    return points
 
-        # グリッド座標変換
-        xi1 = int((x1 - left_x) / W * n_x_bins)
-        yi1 = int((y1 - eave_y) / H * n_y_strips)
-        xi2 = int((x2 - left_x) / W * n_x_bins)
-        yi2 = int((y2 - eave_y) / H * n_y_strips)
 
-        # 線分を描画（Bresenham簡易版）
-        steps = max(abs(xi2 - xi1), abs(yi2 - yi1), 1)
-        for t in range(steps + 1):
-            xi = xi1 + int((xi2 - xi1) * t / steps)
-            yi = yi1 + int((yi2 - yi1) * t / steps)
-            if 0 <= xi < n_x_bins and 0 <= yi < n_y_strips:
-                # 垂直線は強くマーク、水平線は弱くマーク
-                if orient == "vertical":
-                    # 垂直線: ±1ビン幅でマーク（壁の実在を示す）
-                    for dx in range(-1, 2):
-                        if 0 <= xi + dx < n_x_bins:
-                            grid[yi][xi + dx] = 1
-                else:
-                    # 水平線: 中央1点のみマーク（窓上端/下端）
-                    grid[yi][xi] = 1
+def _points_to_density_grid(
+    points: list,
+    left_x: float, right_x: float,
+    eave_y: float, ground_y: float,
+    n_y: int, n_x: int,
+) -> list:
+    """
+    ステップ2: ポイントクラウドを n_y × n_x の密度グリッドへ投影。
+    grid[yi][xi] = そのセルに落ちた点の個数。
+    """
+    W = max(right_x - left_x, 1.0)
+    H = max(ground_y - eave_y, 1.0)
+    grid = [[0] * n_x for _ in range(n_y)]
+    for (px, py) in points:
+        xi = int((px - left_x) / W * n_x)
+        yi = int((py - eave_y) / H * n_y)
+        if 0 <= xi < n_x and 0 <= yi < n_y:
+            grid[yi][xi] += 1
+    return grid
 
-    # ── ステップ2: 建物外壁・境界は常に「壁あり」でマスク ──────────────────
-    # 左端・右端3列 → 外壁
-    for yi in range(n_y_strips):
-        for xi in range(3):
-            grid[yi][xi] = 1
-        for xi in range(n_x_bins - 3, n_x_bins):
-            grid[yi][xi] = 1
-    # 軒上部5% / 地盤下部18% → 対象外（屋根・基礎・地面）
-    for yi in range(int(n_y_strips * 0.05)):
-        for xi in range(n_x_bins):
-            grid[yi][xi] = 1
-    for yi in range(int(n_y_strips * 0.82), n_y_strips):
-        for xi in range(n_x_bins):
-            grid[yi][xi] = 1
 
-    # ── ステップ3: 各y-スライスのx方向空白ラン（=窓候補帯）を抽出 ─────────
-    def _find_gaps_in_row(row):
-        """row内の連続した0のランを返す: [(xi_start, xi_end), ...]"""
-        gaps = []
-        in_gap = False
-        gs = 0
+def _binarize_grid(grid: list, n_y: int, n_x: int,
+                   edge_cols: int = 3,
+                   top_frac: float = 0.05,
+                   bot_frac: float = 0.20) -> list:
+    """
+    ステップ3: 密度グリッドを 0/1 に2値化。
+    - 点が1個でもあれば「壁あり=1」
+    - 建物外縁・軒上・地面近くを強制的に1（対象外領域）
+    """
+    binary = [[1 if grid[yi][xi] > 0 else 0 for xi in range(n_x)]
+              for yi in range(n_y)]
+    # 外壁左右
+    for yi in range(n_y):
+        for xi in range(edge_cols):
+            binary[yi][xi]          = 1
+            binary[yi][n_x - 1 - xi] = 1
+    # 軒上部 / 地盤下部
+    for yi in range(int(n_y * top_frac)):
+        binary[yi] = [1] * n_x
+    for yi in range(int(n_y * (1.0 - bot_frac)), n_y):
+        binary[yi] = [1] * n_x
+    return binary
+
+
+def _find_openings_in_grid(
+    binary: list, n_y: int, n_x: int,
+    W_px: float, H_px: float, m_per_px: float,
+    left_x: float, ground_y: float,
+) -> list:
+    """
+    ステップ4: 2値グリッドから連続した「0（空白）」矩形を検出 → 窓リスト。
+    各列の空白帯をy方向に追跡して窓矩形を確定する。
+
+    偽陽性対策:
+    - 幅が広すぎるギャップは除外（窓は建物幅の35%以下）
+    - ギャップの左右は必ず壁（= 1）でないと窓として確定しない
+    - ギャップが建物外縁の直上/直下に接している場合は除外
+    """
+    MIN_W = 0.05   # 建物幅の最小割合
+    MAX_W = 0.35   # 窓は建物幅の35%以下（広すぎる空白は壁の隙間）
+    MIN_H = 0.06   # 建物高さの最小割合
+    MAX_H = 0.45
+    MAX_WINS = 10
+
+    def _row_gaps(row):
+        """ギャップを返す。左右が壁（=1）で囲まれているもののみ有効。"""
+        gaps, in_g, gs = [], False, 0
         for xi, v in enumerate(row):
-            if not in_gap and v == 0:
-                in_gap = True
-                gs = xi
-            elif in_gap and v != 0:
-                gaps.append((gs, xi - 1))
-                in_gap = False
-        if in_gap:
-            gaps.append((gs, len(row) - 1))
+            if not in_g and v == 0:
+                in_g, gs = True, xi
+            elif in_g and v != 0:
+                ge = xi - 1
+                # 左端(gs-1)と右端(xi)が壁であることを確認
+                left_wall  = gs > 0 and row[gs - 1] == 1
+                right_wall = xi < n_x and row[xi] == 1
+                if left_wall or right_wall:   # 片側でも壁があればOK
+                    gaps.append((gs, ge))
+                in_g = False
+        # 行末ギャップは右壁なし→除外
         return gaps
 
-    slice_gaps = [_find_gaps_in_row(grid[yi]) for yi in range(n_y_strips)]
+    slice_gaps = [_row_gaps(binary[yi]) for yi in range(n_y)]
 
-    # ── ステップ4: y方向に連続するギャップを統合 → 窓矩形を生成 ───────────
-    MIN_WIN_W_FRAC = 0.04   # 建物幅の4%以上
-    MAX_WIN_W_FRAC = 0.40   # 建物幅の40%以下
-    MIN_WIN_H_FRAC = 0.06   # 建物高さの6%以上
-    MAX_WIN_H_FRAC = 0.48   # 建物高さの48%以下
-    MAX_WINS = 8
+    windows  = []
+    used     = set()
 
-    windows = []
-    used_cells = set()  # 処理済みセルを追跡
-
-    for yi_start in range(n_y_strips):
-        for gap in slice_gaps[yi_start]:
-            gx0, gx1 = gap
-            cell_key = (yi_start, gx0, gx1)
-            if cell_key in used_cells:
+    for yi_s in range(n_y):
+        for (gx0, gx1) in slice_gaps[yi_s]:
+            if (yi_s, gx0, gx1) in used:
                 continue
-
-            # このギャップをy方向に追跡（下方向に同じギャップが続くか）
-            cur_gx0, cur_gx1 = gx0, gx1
-            yi_end = yi_start
-            for yi_next in range(yi_start + 1, n_y_strips):
-                # yi_nextで現在のx範囲と重なるギャップを探す
-                best_overlap = 0
-                best_gap = None
-                for g in slice_gaps[yi_next]:
-                    overlap = min(cur_gx1, g[1]) - max(cur_gx0, g[0])
-                    if overlap > best_overlap:
-                        best_overlap = overlap
-                        best_gap = g
-                if best_gap is None or best_overlap <= 0:
+            # y方向に同じギャップが続く限り追跡
+            cx0, cx1 = gx0, gx1
+            yi_e = yi_s
+            for yi_n in range(yi_s + 1, n_y):
+                best, best_ovl = None, 0
+                for (bx0, bx1) in slice_gaps[yi_n]:
+                    ovl = min(cx1, bx1) - max(cx0, bx0)
+                    if ovl > best_ovl:
+                        best_ovl, best = ovl, (bx0, bx1)
+                if best is None or best_ovl <= 0:
                     break
-                # x範囲を共通部分に絞る（精度向上）
-                new_gx0 = max(cur_gx0, best_gap[0])
-                new_gx1 = min(cur_gx1, best_gap[1])
-                # x幅が急激に縮んだら追跡終了
-                if (cur_gx1 - cur_gx0) > 0 and (new_gx1 - new_gx0) < (cur_gx1 - cur_gx0) * 0.5:
+                new_cx0 = max(cx0, best[0])
+                new_cx1 = min(cx1, best[1])
+                # x幅が50%以上縮んだら打ち切り
+                if (cx1 - cx0) > 0 and (new_cx1 - new_cx0) < (cx1 - cx0) * 0.5:
                     break
-                cur_gx0, cur_gx1 = new_gx0, new_gx1
-                yi_end = yi_next
+                cx0, cx1, yi_e = new_cx0, new_cx1, yi_n
 
-            # 処理済みとしてマーク
-            for yi in range(yi_start, yi_end + 1):
-                used_cells.add((yi, gx0, gx1))
+            # 使用済み登録
+            for yi in range(yi_s, yi_e + 1):
+                used.add((yi, gx0, gx1))
 
-            # サイズチェック
-            w_frac = (cur_gx1 - cur_gx0 + 1) / n_x_bins
-            h_frac = (yi_end - yi_start + 1) / n_y_strips
-            if not (MIN_WIN_W_FRAC <= w_frac <= MAX_WIN_W_FRAC):
-                continue
-            if not (MIN_WIN_H_FRAC <= h_frac <= MAX_WIN_H_FRAC):
+            # サイズフィルタ
+            w_frac = (cx1 - cx0 + 1) / n_x
+            h_frac = (yi_e - yi_s + 1) / n_y
+            if not (MIN_W <= w_frac <= MAX_W and MIN_H <= h_frac <= MAX_H):
                 continue
 
-            # ピクセル座標→メートル変換
-            x_px   = left_x + cur_gx0 / n_x_bins * W
-            y_top_px = eave_y + yi_start / n_y_strips * H
-            y_bot_px = eave_y + (yi_end + 1) / n_y_strips * H
-
-            w_m = round((cur_gx1 - cur_gx0 + 1) / n_x_bins * W * m_per_px, 2)
-            h_m = round((yi_end - yi_start + 1) / n_y_strips * H * m_per_px, 2)
-            x_m = round((x_px - left_x) * m_per_px, 2)
-            z_m = round((ground_y - y_bot_px) * m_per_px, 2)
+            # メートル変換
+            x_m = round(cx0 / n_x * W_px * m_per_px, 2)
+            w_m = round((cx1 - cx0 + 1) / n_x * W_px * m_per_px, 2)
+            y_bot_px = (yi_e + 1) / n_y * H_px
+            z_m = round((H_px - y_bot_px) * m_per_px, 2)
+            h_m = round((yi_e - yi_s + 1) / n_y * H_px * m_per_px, 2)
 
             windows.append({
                 "x_m": max(0.0, x_m),
@@ -552,6 +544,51 @@ def scan_face_profile_windows(
             })
             if len(windows) >= MAX_WINS:
                 return windows
+
+    return windows
+
+
+def scan_face_profile_windows(
+    region_lines: list,
+    left_x: float, right_x: float,
+    eave_y: float, ground_y: float,
+    m_per_px: float,
+    n_slices: int = 100,
+    n_bins:   int = 100,
+) -> list:
+    """
+    輪切り方式（ユーザー設計）でウィンドウを検出。GPT不要。
+
+    処理フロー:
+      1. 線 → ポイントクラウド（px_interval=3pxでサンプリング）
+      2. 4方向×100スライス × 100ビンの密度グリッドへ投影
+      3. 2値化（点あり=壁、なし=空白）
+      4. 連続した空白矩形を窓として確定
+      5. 3D座標（x_m, z_m, w_m, h_m）へ変換
+
+    Returns: [{"x_m","z_m","w_m","h_m"}, ...]
+    """
+    W_px = max(right_x - left_x, 1.0)
+    H_px = max(ground_y - eave_y, 1.0)
+
+    # ステップ1: 全線 → 点群
+    points = _lines_to_points(region_lines, px_interval=3.0)
+
+    # ステップ2: 密度グリッド
+    density = _points_to_density_grid(
+        points, left_x, right_x, eave_y, ground_y, n_slices, n_bins
+    )
+
+    # ステップ3: 2値化（外縁・軒・地盤マスク込み）
+    binary = _binarize_grid(density, n_slices, n_bins)
+
+    # ステップ4+5: 空白矩形 → 窓リスト
+    windows = _find_openings_in_grid(
+        binary, n_slices, n_bins, W_px, H_px, m_per_px, left_x, ground_y
+    )
+
+    return windows
+
 
     return windows
 
