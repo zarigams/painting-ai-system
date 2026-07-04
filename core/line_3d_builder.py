@@ -460,20 +460,24 @@ def build_3d_from_line_analysis(
             progress_callback(stage, msg)
 
     # --- Stage A: 面ラベル検出 ---
+    _FALLBACK_REGIONS = {
+        "west":  (0.0, 0.0, 0.5, 0.5),
+        "south": (0.5, 0.0, 1.0, 0.5),
+        "north": (0.0, 0.5, 0.5, 1.0),
+        "east":  (0.5, 0.5, 1.0, 1.0),
+    }
     _cb("A", "各立面図の位置を特定中（GPT 1回）…")
     if face_regions is None:
         try:
             face_regions = detect_face_labels(img_bytes, api_key)
             _cb("A", f"面検出: {list(face_regions.keys())}")
         except Exception as ex:
-            # フォールバック: 標準2×2レイアウト
-            face_regions = {
-                "west":  (0.0, 0.0, 0.5, 0.5),
-                "south": (0.5, 0.0, 1.0, 0.5),
-                "north": (0.0, 0.5, 0.5, 1.0),
-                "east":  (0.5, 0.5, 1.0, 1.0),
-            }
-            _cb("A", f"面検出失敗→標準2×2レイアウト使用 ({ex})")
+            face_regions = {}
+            _cb("A", f"面検出例外: {ex}")
+        # GPTが全unknownを返した等で面が2未満の場合もフォールバック
+        if len(face_regions) < 2:
+            face_regions = _FALLBACK_REGIONS
+            _cb("A", "面検出数不足→標準2×2レイアウト使用（西/南/北/東）")
 
     # --- Stage B: 線検出 ---
     _cb("B", "全線分を検出中（Canny+Hough）…")
