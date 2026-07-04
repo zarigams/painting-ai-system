@@ -93,8 +93,16 @@ def detect_face_labels(img_bytes: bytes, api_key: str) -> dict:
         "bottom_left":  (0.0, 0.5, 0.5, 1.0),
         "bottom_right": (0.5, 0.5, 1.0, 1.0),
     }
+    # 日本語→英語の正規化（GPT-4oが「南」「北面」等で返す場合に対応）
+    _JP_NORM = {
+        "南": "south", "南面": "south", "南立面": "south", "南立面図": "south",
+        "北": "north", "北面": "north", "北立面": "north", "北立面図": "north",
+        "東": "east",  "東面": "east",  "東立面": "east",  "東立面図": "east",
+        "西": "west",  "西面": "west",  "西立面": "west",  "西立面図": "west",
+    }
     face_regions = {}
     for quad, face in result.items():
+        face = _JP_NORM.get(str(face).strip(), face)  # 日本語→英語
         if face in ("south","north","east","west") and quad in quad_ratios:
             face_regions[face] = quad_ratios[quad]
     return face_regions  # {"south": (x1r,y1r,x2r,y2r), ...}
