@@ -1513,7 +1513,7 @@ elif st.session_state.step == 2:
 
                             with _3d_mode_tab:
                                 st.markdown("**方法を選んで実行してください**")
-                                _m1, _m2 = st.columns(2)
+                                _m1, _m2, _m3 = st.columns(3)
 
                                 with _m1:
                                     st.markdown("##### 🔮 方法1: 図面直接解析")
@@ -1660,6 +1660,131 @@ elif st.session_state.step == 2:
                                     st.markdown("**Stage1 出力: クリーントレースPNG（これをGPTに送信）**")
                                     st.image(st.session_state["_3d_trace_png"], use_container_width=True)
 
+                                with _m3:
+                                    st.markdown("##### 🧩 方法3: 多段階精密解析（NEW）")
+                                    st.caption(
+                                        "**Stage1**: 各立面図（南/北/東/西）の位置を特定  \n"
+                                        "**Stage2**: 各面をクロップ→寸法を個別読み取り  \n"
+                                        "**Stage3**: 各面をクロップ→窓・ドアを個別検出  \n"
+                                        "**Stage4**: 全面データを統合→3D生成  \n"
+                                        "※ 元図面画像（drawing_page1_raw）が必要です"
+                                    )
+                                    _orig_img = st.session_state.get("drawing_page1_raw")
+                                    if not _orig_img:
+                                        st.warning("先にSTEP2で図面を解析してください（drawing_page1_rawが必要）")
+                                    else:
+                                        if st.button("🧩 多段階精密解析を実行", type="primary", key="btn_3d_multi"):
+                                            from core.trace_analyzer import (
+                                                detect_face_layout, read_face_dimensions,
+                                                detect_face_openings, detect_roof_type,
+                                                assemble_multistage_result, _crop_by_ratio,
+                                            )
+                                            from modules.llm_client import _get_api_key
+                                            _ms_api_key = _get_api_key()
+                                            _ms_log = []
+
+                                            # Stage 1: 各面の位置特定
+                                            with st.spinner("Stage1: 各立面図（南/北/東/西）の位置を特定中…"):
+                                                try:
+                                                    _ms_layout = detect_face_layout(_orig_img, _ms_api_key)
+                                                    _ms_valid = {k: v for k, v in _ms_layout.items()
+                                                                 if k in ("south","north","east","west") and isinstance(v, dict)}
+                                                    st.success(f"Stage1完了: {len(_ms_valid)}面を検出 ({', '.join(_ms_valid.keys())})")
+                                                    _ms_log.append({"stage": 1, "faces": list(_ms_valid.keys())})
+                                                except Exception as _ms_e1:
+                                                    st.error(f"Stage1失敗: {_ms_e1}")
+                                                    _ms_valid = {}
+
+                                            _ms_face_dims = {}
+                                            _ms_face_opens = {}
+                                            _face_label_map = {"south":"南面","north":"北面","east":"東面","west":"西面"}
+
+                                            if _ms_valid:
+                                                # Stage 2: 各面の寸法読み取り
+                                                for _ms_fk, _ms_freg in _ms_valid.items():
+                                                    _ms_flabel = _face_label_map.get(_ms_fk, _ms_fk)
+                                                    with st.spinner(f"Stage2: {_ms_flabel}の寸法を読み取り中…"):
+                                                        try:
+                                                            _ms_crop = _crop_by_ratio(
+                                                                _orig_img,
+                                                                _ms_freg["x1"], _ms_freg["y1"],
+                                                                _ms_freg["x2"], _ms_freg["y2"],
+                                                            )
+                                                            _ms_dim = read_face_dimensions(_ms_crop, _ms_flabel, _ms_api_key)
+                                                            _ms_face_dims[_ms_fk] = _ms_dim
+                                                            _ms_log.append({"stage": 2, "face": _ms_fk, "dims": _ms_dim})
+                                                            st.success(f"  {_ms_flabel}: 幅={_ms_dim.get('width_m')}m / 軒高={_ms_dim.get('eave_height_m')}m / 棟高={_ms_dim.get('ridge_height_m')}m")
+                                                        except Exception as _ms_e2:
+                                                            st.warning(f"  {_ms_flabel}寸法読み取り失敗: {_ms_e2}")
+                                                            _ms_face_dims[_ms_fk] = {}
+
+                                                # Stage 3: 各面の窓・ドア検出
+                                                for _ms_fk, _ms_freg in _ms_valid.items():
+                                                    _ms_flabel = _face_label_map.get(_ms_fk, _ms_fk)
+                                                    _ms_w = float((_ms_face_dims.get(_ms_fk) or {}).get("width_m") or 10.0)
+                                                    _ms_h = float((_ms_face_dims.get(_ms_fk) or {}).get("eave_height_m") or 6.0)
+                                                    with st.spinner(f"Stage3: {_ms_flabel}の窓・ドアを検出中…"):
+                                                        try:
+                                                            _ms_crop2 = _crop_by_ratio(
+                                                                _orig_img,
+                                                                _ms_freg["x1"], _ms_freg["y1"],
+                                                                _ms_freg["x2"], _ms_freg["y2"],
+                                                            )
+                                                            _ms_ops = detect_face_openings(_ms_crop2, _ms_flabel, _ms_w, _ms_h, _ms_api_key)
+                                                            _ms_face_opens[_ms_fk] = _ms_ops
+                                                            _ms_log.append({"stage": 3, "face": _ms_fk, "count": len(_ms_ops)})
+                                                            st.success(f"  {_ms_flabel}: {len(_ms_ops)}個の開口部を検出")
+                                                        except Exception as _ms_e3:
+                                                            st.warning(f"  {_ms_flabel}開口部検出失敗: {_ms_e3}")
+                                                            _ms_face_opens[_ms_fk] = []
+
+                                                # Stage 3b: 屋根タイプ判定（南面から）
+                                                _ms_roof_type = "寄棟"
+                                                if "south" in _ms_valid:
+                                                    with st.spinner("Stage3b: 屋根タイプを判定中…"):
+                                                        try:
+                                                            _ms_south_crop = _crop_by_ratio(
+                                                                _orig_img,
+                                                                _ms_valid["south"]["x1"], _ms_valid["south"]["y1"],
+                                                                _ms_valid["south"]["x2"], _ms_valid["south"]["y2"],
+                                                            )
+                                                            _ms_roof_type = detect_roof_type(_ms_south_crop, _ms_api_key)
+                                                            st.success(f"  屋根タイプ: {_ms_roof_type}")
+                                                        except Exception:
+                                                            pass
+
+                                                # Stage 4: 3Dデータ組み立て
+                                                with st.spinner("Stage4: 解析結果を3Dデータに統合中…"):
+                                                    _ms_bldg = assemble_multistage_result(
+                                                        layout=_ms_layout,
+                                                        face_dims=_ms_face_dims,
+                                                        face_openings=_ms_face_opens,
+                                                        roof_type=_ms_roof_type,
+                                                    )
+                                                    # DrawingAnalyzerの寸法補正を適用（annotationsあれば）
+                                                    _ms_ann = st.session_state.get("drawing_annotations") or []
+                                                    if _ms_ann:
+                                                        from core.building_3d_generator import build_3d_from_annotations
+                                                        _ms_faces_data = st.session_state.get("drawing_data", {}).get("faces")
+                                                        _ms_fps = (st.session_state.get("floor_plan_data") or {}).get("floor_footprints") or []
+                                                        _ms_ann_data = build_3d_from_annotations(_ms_ann, faces=_ms_faces_data, floor_footprints=_ms_fps)
+                                                        if "error" not in _ms_ann_data:
+                                                            _ms_bldg["dimensions"].update(_ms_ann_data["dimensions"])
+                                                            _ms_bldg["roof"]["eave_height"]  = _ms_ann_data["dimensions"]["eave_height"]
+                                                            _ms_bldg["roof"]["ridge_height"] = _ms_ann_data["dimensions"]["ridge_height"]
+                                                            if _ms_ann_data.get("roof", {}).get("type"):
+                                                                _ms_bldg["roof"]["type"] = _ms_ann_data["roof"]["type"]
+                                                            if _ms_ann_data.get("openings"):
+                                                                _ms_bldg["openings"] = _ms_ann_data["openings"]
+                                                            _ms_dd_fps = (st.session_state.get("drawing_data") or {}).get("floor_footprints") or []
+                                                            _ms_ann_fps = _ms_ann_data.get("floor_footprints") or []
+                                                            _ms_bldg["floor_footprints"] = _ms_ann_fps or _ms_dd_fps or []
+                                                            _ms_bldg["note"] += " ／ 寸法補正済"
+                                                            _ms_bldg["_pipeline"] = "multistage_v1+annotations"
+                                                    st.session_state["building_3d_data"] = _ms_bldg
+                                                    st.success(f"✅ Stage4完了: {_ms_bldg['note'][:100]}")
+
+
                             with _3d_result_tab:
                                 _bdata = st.session_state.get("building_3d_data")
                                 if _bdata and "error" not in _bdata:
@@ -1669,6 +1794,8 @@ elif st.session_state.step == 2:
                                         "trace_v2+annotations": "🔬 精密解析+寸法補正",
                                         "annotations_v1": "📐 寸法値直接使用",
                                         "direct_fallback": "🔮 GPT直接解析",
+                                        "multistage_v1": "🧩 多段階精密解析",
+                                        "multistage_v1+annotations": "🧩 多段階解析+寸法補正",
                                     }.get(_pipe, "🔮 直接解析")
                                     st.caption(f"使用パイプライン: {_pipe_label} | {_bdata.get('note','')[:100]}")
                                     from core.building_3d_generator import generate_building_3d_html
