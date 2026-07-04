@@ -1530,7 +1530,9 @@ elif st.session_state.step == 2:
                                                 from core.building_3d_generator import build_3d_from_annotations
                                                 _m1_roof_sel = st.session_state.get("m1_roof_sel", "寄棟")
                                                 _faces1 = st.session_state.get("drawing_data", {}).get("faces")
-                                                _fp1 = (st.session_state.get("floor_plan_data") or {}).get("floor_footprints") or []
+                                                # floor_footprints優先順: 平面図PDF > 図面解析（DrawingAnalyzer直接返却）> 空
+                                                _dd_fps1 = (st.session_state.get("drawing_data") or {}).get("floor_footprints") or []
+                                                _fp1 = (st.session_state.get("floor_plan_data") or {}).get("floor_footprints") or _dd_fps1
                                                 _bldg_data = build_3d_from_annotations(_m1_ann, roof_type=_m1_roof_sel, faces=_faces1, floor_footprints=_fp1)
                                                 if "error" in _bldg_data:
                                                     st.error(f"解析エラー: {_bldg_data['error']}")
@@ -1622,14 +1624,27 @@ elif st.session_state.step == 2:
                                                                     })
                                                                     # ★GPT壁はwrong寸法のためクリア→JSが補正BW/BD/EHで4面自動生成
                                                                     _bldg_data["walls"] = []
+                                                                    # ★屋根タイプをannotationsから上書き（traceGPTは屋根タイプを誤判定することが多い）
+                                                                    if _ann_data.get("roof", {}).get("type"):
+                                                                        _bldg_data.setdefault("roof", {})["type"] = _ann_data["roof"]["type"]
                                                                     # ★openings x座標を新幅にスケーリング補正
                                                                     for _op in (_bldg_data.get("openings") or []):
                                                                         _op["x"] = round(float(_op.get("x") or 0) * _scale_r, 2)
                                                                     _bldg_data["note"] = f"{_bldg_data.get('note','')} ／ 寸法補正: {_ann_data['note']}"
                                                                     _bldg_data["_pipeline"] = "trace_v2+annotations"
-                                                                    # floor_footprints: 平面図>トレース>空 の優先順
-                                                                    if not _bldg_data.get("floor_footprints"):
-                                                                        _bldg_data["floor_footprints"] = _ann_data.get("floor_footprints") or []
+                                                                    # floor_footprints: 図面解析(DrawingAnalyzer直接) > 平面図PDF > トレース > 空 の優先順
+                                                                    _dd_fps2 = (st.session_state.get("drawing_data") or {}).get("floor_footprints") or []
+                                                                    _ann_fps2 = _ann_data.get("floor_footprints") or []
+                                                                    _best_fps = _ann_fps2 or _dd_fps2 or []
+                                                                    _bldg_data["floor_footprints"] = _best_fps
+                                                                    # ★traceのfloor_footprints使用時: floor_heightを実際の軒高に比例スケール
+                                                                    if _bldg_data["floor_footprints"] and not _ann_fps2:
+                                                                        _total_fh = sum(fp.get("floor_height") or 3.0 for fp in _bldg_data["floor_footprints"])
+                                                                        _target_eh = _dim_fix.get("eave_height") or 6.0
+                                                                        if _total_fh > 0.1:
+                                                                            _scale_fh = _target_eh / _total_fh
+                                                                            for _fp in _bldg_data["floor_footprints"]:
+                                                                                _fp["floor_height"] = round((_fp.get("floor_height") or 3.0) * _scale_fh, 2)
                                                                     # openings: faces由来（face付き・全方位）で上書き。トレースのopeningsはface未設定で全部南壁になるため
                                                                     if _ann_data.get("openings"):
                                                                         _bldg_data["openings"] = _ann_data["openings"]

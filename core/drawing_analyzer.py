@@ -86,6 +86,15 @@ DRAWING_SYSTEM_PROMPT_ANNOTATED = """
 - 各立面図の枠内だけを個別に読む（他の面の線と混同しない）
 - それぞれの幅・高さ・開口部を面ごとに独立して計測する
 
+## 1F/2Fのセットバック（平面形状差）の検出
+立面図から1F/2Fの外壁の出入りを読み取り、floor_footprints を設定する。
+- 南立面・北立面: 1Fと2Fで横幅（左右方向）が異なれば → widthに差あり
+- 東立面・西立面: 1Fと2Fで奥行（前後方向）が異なれば → depthに差あり
+- 1Fが左に張り出している → x_offset は正（2Fが右にずれている）
+- 1Fが手前に張り出している → z_offset は正（2Fが奥にずれている）
+- 1Fと2Fが同じ形状なら floor_footprints: []（必ず空配列を返す）
+- **住宅でよくあるパターン**: 南面・北面の幅は同じだが、東面から見ると1Fのほうが出張っている
+
 ## annotations フォーマット
 各寸法について以下を返す：
 - label: 項目名（"南面幅", "東面幅", "棟高さ", "軒高（2F）", "1F天井高", "縮尺" など）
@@ -155,6 +164,24 @@ DRAWING_SYSTEM_PROMPT_ANNOTATED = """
     }
   },
   "total_wall_area": 197.3,
+  "floor_footprints": [
+    {
+      "floor": 1,
+      "width": 12.9,
+      "depth": 8.5,
+      "x_offset": 0,
+      "z_offset": 0,
+      "floor_height": 3.665
+    },
+    {
+      "floor": 2,
+      "width": 10.0,
+      "depth": 7.16,
+      "x_offset": 0.5,
+      "z_offset": 0.7,
+      "floor_height": 2.835
+    }
+  ],
   "annotations": [
     {"label": "南面幅", "value": "9.10", "unit": "m", "x_pct": 25, "y_pct": 82, "x1_pct": 8, "x2_pct": 43, "confidence": "medium", "category": "width"},
     {"label": "東面幅", "value": "7.20", "unit": "m", "x_pct": 73, "y_pct": 82, "x1_pct": 55, "x2_pct": 92, "confidence": "medium", "category": "width"},
@@ -168,6 +195,12 @@ DRAWING_SYSTEM_PROMPT_ANNOTATED = """
 - faces: 各面の幅・軒高・開口部リスト・wall_area（開口控除済み面積）を返す
 - openings の x_from_left: その面の左端から開口部中心までの距離(m)（3D窓位置に使用）
 - openings の z_from_ground: 地面（GL）から開口部下端までの絶対高さ(m)。1F腰窓=0.9、1F掃出し/ドア=0。2F窓の場合は「1F天井高 + 局部高さ」で計算すること（例: 1F天井高3.665mなら2F腰窓=4.565、2F掃出し=3.665）
+- floor_footprints: 1Fと2Fで平面形状（幅・奥行き）が異なる場合に記述。同一形状なら空配列 []
+  - width/depth: その階の外壁外側寸法(m)
+  - x_offset: 1F左端を基準とした、この階の左端のずれ(m)
+  - z_offset: 1F南端を基準とした、この階の南端のずれ(m)
+  - floor_height: この階の天井高(m)（1F天井高は図面から必ず読み取ること）
+  - 1Fと2Fが同じ幅・奥行きなら floor_footprints: []
 - total_wall_area: 4面のwall_area合計（開口控除済み）を返す
 - exterior_wall_area は null のまま（別モジュールで幾何学計算するため）
 - faces/total_wall_area が取得できない場合はキーごと省略してよい
