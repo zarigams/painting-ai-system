@@ -369,308 +369,376 @@ def analyze_trace_for_building(
         return {"error": str(e), "_raw_gpt_response": raw_text}
 
 
+
 # ═══════════════════════════════════════════════════════════════════════
-# 多段階精密解析パイプライン（Stage 1〜4）
-# ─ ユーザーの指摘: 一気にGPTに解かせるから精度が出ない
-# ─ 解決策: ①面ごとに位置特定→②クロップ→③寸法→④窓ドア と段階分解
+# 多段階精密解析パイプライン v2（Stage 1〜N、大幅増強版）
+#
+# 考え方: 一度に多くを聞かない。各GPT呼び出しは「1つの質問」だけ。
+#   Stage 1 : 各面（南/北/東/西）の画像内位置をratioで特定
+#   Stage 2a: 各面の建物外形（left/right/ground/eave）をpixel ratioで特定
+#   Stage 2b: 各面の寸法数値を読む（幅・軒高・棟高）
+#   Stage 2c: 各面の1F/2F境界線の位置をratioで特定
+#   Stage 2d: 各面のセットバック（凸凹）を検出
+#   Stage 3a: 各面・1Fの窓数をカウント
+#   Stage 3b: 各面・1Fの各窓の位置とサイズをpixel ratioで取得
+#   Stage 3c: 各面・2Fの窓数をカウント
+#   Stage 3d: 各面・2Fの各窓の位置とサイズをpixel ratioで取得
+#   Stage 3e: 各面のドア・玄関を検出
+#   Stage 4 : 屋根タイプを判定（南面）
+#   Stage 5 : 全データを3Dデータに組み立て
 # ═══════════════════════════════════════════════════════════════════════
 
-_MS_SYS_LAYOUT = """あなたは建築図面を読む専門家です。JSONのみ返してください。説明文不要。"""
-
-_MS_SYS_DIM = """あなたは建築立面図の寸法を精密に読む専門家です。JSONのみ返してください。説明文不要。"""
-
-_MS_SYS_OPEN = """あなたは建築立面図の窓・ドアを精密に読む専門家です。JSONのみ返してください。説明文不要。"""
-
-_MS_SYS_ROOF = """あなたは建築立面図の屋根タイプを判定する専門家です。JSONのみ返してください。"""
+_SYS = "あなたは建築図面の精密解析専門家です。JSONのみ返してください。説明文・コードブロック不要。"
 
 
-def _call_gpt_vision_json(client, system_prompt: str, user_text: str, img_bytes: bytes, max_tokens: int = 600) -> tuple:
-    """GPT-4o Vision呼び出し→JSONパース。(dict_or_list, usage) を返す。"""
+def _gpt_json(client, user_text: str, img_bytes: bytes, max_tokens: int = 300) -> tuple:
+    """GPT-4o Vision→JSONパース共通ヘルパー。(parsed, usage)を返す。"""
     b64 = base64.b64encode(img_bytes).decode("utf-8")
-    response = client.chat.completions.create(
+    resp = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": user_text},
-                    {"type": "image_url", "image_url": {
-                        "url": f"data:image/png;base64,{b64}",
-                        "detail": "high",
-                    }},
-                ],
-            },
+            {"role": "system", "content": _SYS},
+            {"role": "user", "content": [
+                {"type": "text", "text": user_text},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"}},
+            ]},
         ],
         max_tokens=max_tokens,
         temperature=0.05,
     )
-    raw = response.choices[0].message.content.strip()
-    if raw.startswith("```"):
+    raw = resp.choices[0].message.content.strip()
+    # コードブロック除去
+    if "```" in raw:
         parts = raw.split("```")
         raw = parts[1] if len(parts) > 1 else raw
-        if raw.startswith("json"):
-            raw = raw[4:]
-    return json.loads(raw.strip()), response.usage
+        if raw.startswith("json"): raw = raw[4:]
+    return json.loads(raw.strip()), resp.usage
 
 
-def _crop_by_ratio(img_bytes: bytes, x1r: float, y1r: float, x2r: float, y2r: float) -> bytes:
-    """画像をratioでクロップ（0.0〜1.0）。クロップ不可の場合は元画像を返す。"""
+def _crop_r(img_bytes: bytes, x1: float, y1: float, x2: float, y2: float, pad: float = 0.01) -> bytes:
+    """0〜1 ratio でクロップ。pad=余白比率。失敗時は元画像を返す。"""
     from PIL import Image
     img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     iw, ih = img.size
-    x1 = max(0, int(x1r * iw))
-    y1 = max(0, int(y1r * ih))
-    x2 = min(iw, int(x2r * iw))
-    y2 = min(ih, int(y2r * ih))
-    if x2 - x1 < 30 or y2 - y1 < 30:
+    lx = max(0, int((x1 - pad) * iw))
+    ly = max(0, int((y1 - pad) * ih))
+    rx = min(iw, int((x2 + pad) * iw))
+    ry = min(ih, int((y2 + pad) * ih))
+    if rx - lx < 30 or ry - ly < 30:
         return img_bytes
-    cropped = img.crop((x1, y1, x2, y2))
+    cropped = img.crop((lx, ly, rx, ry))
     buf = io.BytesIO()
     cropped.save(buf, format="PNG")
     return buf.getvalue()
 
 
-# ── Stage 1: 各面の画像内位置を特定 ──────────────────────────────────
+# ── Stage 1: 各面の位置特定 ──────────────────────────────────────────
 
-def detect_face_layout(original_img_bytes: bytes, api_key: str) -> dict:
+def ms_stage1_layout(img_bytes: bytes, api_key: str) -> dict:
     """
-    Stage 1: 建築図面画像内の各立面図（南/北/東/西）の位置を特定する。
+    Stage 1: 図面内の南/北/東/西 立面図のbounding boxを0〜1 ratioで返す。
+    返値: {"south": {"x1":f,"y1":f,"x2":f,"y2":f}, "north":..., "east":..., "west":...}
+    見つからない面はnull。
+    """
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
+    q = """この建築図面に 南立面図・北立面図・東立面図・西立面図 が配置されています。
+各立面図のラベル文字（「南立面図」「北立面図」等）を読んで、
+それぞれの領域を画像全体に対する割合（0.0〜1.0）で返してください。
 
-    Returns
-    -------
-    dict: {
-        "south": {"x1": 0.0, "y1": 0.0, "x2": 0.5, "y2": 0.5} or None,
-        "north": ..., "east": ..., "west": ...,
-        "_raw": raw GPT response
+{"south":{"x1":0.0,"y1":0.0,"x2":0.5,"y2":0.5},"north":{"x1":0.5,"y1":0.0,"x2":1.0,"y2":0.5},"east":{"x1":0.0,"y1":0.5,"x2":0.5,"y2":1.0},"west":{"x1":0.5,"y1":0.5,"x2":1.0,"y2":1.0}}"""
+    result, _ = _gpt_json(client, q, img_bytes, max_tokens=200)
+    return result
+
+
+# ── Stage 2a: 建物外形のpixel ratio特定 ──────────────────────────────
+
+def ms_stage2a_bounds(face_img: bytes, face_label: str, api_key: str) -> dict:
+    """
+    Stage 2a: クロップ済み立面図内で、建物の外形（輪郭）を
+    画像に対する0〜1 ratioで特定する。
+    寸法線・タイトル文字・外枠は除外すること。
+    返値: {"left":f, "right":f, "ground":f, "eave":f}
+    """
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
+    q = f"""これは{face_label}の切り抜き画像です。
+建物本体の外形輪郭（外壁の一番外の線）を、この画像全体に対する0〜1の割合で特定してください。
+寸法線・タイトル文字・図面外枠は含めないこと。
+
+返却フォーマット:
+{{"left": 0.08, "right": 0.92, "ground": 0.78, "eave": 0.18}}
+
+left: 建物左端（画像幅に対する割合）
+right: 建物右端
+ground: 地面ライン（画像高さに対する割合、下が大きい値）
+eave: 軒先ライン（屋根の出始め、上が小さい値）"""
+    result, _ = _gpt_json(client, q, face_img, max_tokens=100)
+    return result
+
+
+# ── Stage 2b: 寸法数値を読む ─────────────────────────────────────────
+
+def ms_stage2b_dims(face_img: bytes, face_label: str, api_key: str) -> dict:
+    """
+    Stage 2b: 立面図の寸法線に書かれた数値を読む。
+    返値: {"width_m": float|None, "eave_height_m": float|None, "ridge_height_m": float|None}
+    """
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
+    q = f"""これは{face_label}です。
+図面内の寸法線（←→ や |..| で示された数値）を読み取ってください。
+
+- width_m: 建物の幅（水平の寸法、m単位）
+- eave_height_m: 軒高（地面から軒先、m単位）  
+- ridge_height_m: 棟高（地面から棟頂点、m単位）
+
+読み取れない項目はnull。住宅の合理的な範囲外（幅>30m、軒高>10m）はnull。
+
+{{"width_m": 12.9, "eave_height_m": 6.5, "ridge_height_m": 8.693}}"""
+    result, _ = _gpt_json(client, q, face_img, max_tokens=100)
+    return result
+
+
+# ── Stage 2c: 1F/2F境界線の検出 ──────────────────────────────────────
+
+def ms_stage2c_floor_line(face_img: bytes, face_label: str, api_key: str) -> dict:
+    """
+    Stage 2c: 立面図内の1F/2F境界（1F天井＝2F床）の水平線を
+    画像高さに対する0〜1 ratioで返す。
+    平屋や1階建てならnull。
+    返値: {"has_second_floor": bool, "floor2_start_y_ratio": float|None}
+    floor2_start_y_ratio: 0=上端, 1=下端。2階の始まりを示す。
+    """
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
+    q = f"""これは{face_label}です。
+建物が2階建ての場合、1F天井と2F床の境界を示す水平線はありますか？
+
+{{"has_second_floor": true, "floor2_start_y_ratio": 0.55}}
+
+floor2_start_y_ratio は画像上端=0, 下端=1 の割合で境界線の位置を示します。
+平屋・1階建てなら {{"has_second_floor": false, "floor2_start_y_ratio": null}}"""
+    result, _ = _gpt_json(client, q, face_img, max_tokens=80)
+    return result
+
+
+# ── Stage 2d: セットバック（凸凹）検出 ───────────────────────────────
+
+def ms_stage2d_setback(face_img: bytes, face_label: str, api_key: str) -> dict:
+    """
+    Stage 2d: 立面図で1Fより2Fが狭い（凸凹形状）かを検出。
+    返値: {
+      "has_setback": bool,
+      "f1_left_ratio": float,   # 1Fの左端（0〜1）
+      "f1_right_ratio": float,  # 1Fの右端
+      "f2_left_ratio": float,   # 2Fの左端（1Fより大きい値なら右にセットバック）
+      "f2_right_ratio": float   # 2Fの右端
     }
     """
     from openai import OpenAI
-    from core.logger import log_gpt_call, log_error
-
     client = OpenAI(api_key=api_key)
-    prompt = """この建築図面には複数の立面図（南立面図・北立面図・東立面図・西立面図）が配置されています。
+    q = f"""これは{face_label}です。
+1階と2階を比べたとき、形が凸凹（2階が1階より狭い・オフセットがある）していますか？
 
-各立面図が画像内のどの領域にあるか、画像全体に対する割合（0.0〜1.0）でbounding boxを特定してください。
-立面図のラベル文字（「南立面図」「北立面図」「東立面図」「西立面図」など）を読んで特定すること。
+例: 1階が幅いっぱいで、2階が少し内側に収まっている → セットバックあり
 
-見つからない面は null を返す。
+{{"has_setback": true, "f1_left_ratio": 0.0, "f1_right_ratio": 1.0, "f2_left_ratio": 0.05, "f2_right_ratio": 0.90}}
 
-```json
-{
-  "south": {"x1": 0.0, "y1": 0.0, "x2": 0.5, "y2": 0.5},
-  "north": {"x1": 0.5, "y1": 0.0, "x2": 1.0, "y2": 0.5},
-  "east":  {"x1": 0.0, "y1": 0.5, "x2": 0.5, "y2": 1.0},
-  "west":  {"x1": 0.5, "y1": 0.5, "x2": 1.0, "y2": 1.0}
-}
-```"""
-    try:
-        result, usage = _call_gpt_vision_json(client, _MS_SYS_LAYOUT, prompt, original_img_bytes, max_tokens=300)
-        log_gpt_call(
-            func_name="trace_multistage.detect_face_layout",
-            model="gpt-4o",
-            system_prompt=_MS_SYS_LAYOUT,
-            user_message_summary="図面全体→各面のbounding box特定",
-            response_text=str(result),
-            tokens_total=usage.total_tokens if usage else None,
-        )
-        result["_stage"] = "layout"
-        return result
-    except Exception as e:
-        log_error("Stage1エラー: detect_face_layout", e, "GPT")
-        raise
+has_setback=falseなら全て0〜1のデフォルト値でよい。
+値は建物外形内での相対割合（建物左端=0、右端=1）で表す。"""
+    result, _ = _gpt_json(client, q, face_img, max_tokens=120)
+    return result
 
 
-# ── Stage 2: 各面の寸法読み取り ───────────────────────────────────────
+# ── Stage 3a/3c: 各階の窓数カウント ──────────────────────────────────
 
-def read_face_dimensions(face_img_bytes: bytes, face_label: str, api_key: str) -> dict:
+def ms_stage3_count_openings(face_img: bytes, face_label: str, floor_num: int, api_key: str) -> dict:
     """
-    Stage 2: クロップ済み立面図から寸法を読み取る。
-
-    Returns
-    -------
-    dict: {"width_m": float, "eave_height_m": float, "ridge_height_m": float}
-          読み取れない項目は None
+    Stage 3a/3c: 指定階の窓・ドアの数をカウントする。
+    floor_num: 1 or 2
+    返値: {"window_count": int, "door_count": int}
     """
     from openai import OpenAI
-    from core.logger import log_gpt_call, log_error
-
     client = OpenAI(api_key=api_key)
-    prompt = f"""これは建築図面の{face_label}（切り抜き済み）です。
+    q = f"""これは{face_label}です。
+{floor_num}階部分に見える「窓」と「ドア・玄関」をそれぞれ数えてください。
 
-この立面図内の寸法線（数字が書かれた矢印線）を読み取り、以下を返してください:
-- width_m: 建物の幅（水平方向・m単位）※最も長い水平寸法線の数値
-- eave_height_m: 軒高（地面から軒先まで・m単位）
-- ridge_height_m: 棟高（地面から棟まで・m単位）
+{{"window_count": 3, "door_count": 1}}
 
-寸法線が見当たらない項目は null を返してください。
-住宅の一般的な範囲（幅: 5〜20m、軒高: 2.5〜7m、棟高: 4〜10m）を外れる値は null にしてください。
-
-```json
-{{"width_m": 12.9, "eave_height_m": 6.5, "ridge_height_m": 8.7}}
-```"""
-    try:
-        result, usage = _call_gpt_vision_json(client, _MS_SYS_DIM, prompt, face_img_bytes, max_tokens=150)
-        log_gpt_call(
-            func_name="trace_multistage.read_face_dimensions",
-            model="gpt-4o",
-            system_prompt=_MS_SYS_DIM,
-            user_message_summary=f"{face_label}寸法読み取り",
-            response_text=str(result),
-            tokens_total=usage.total_tokens if usage else None,
-        )
-        return result
-    except Exception as e:
-        log_error(f"Stage2エラー({face_label}): read_face_dimensions", e, "GPT")
-        return {}
+窓: 壁に開いた矩形の開口（格子・ガラス面として表現）
+ドア: 地面から続く背の高い開口"""
+    result, _ = _gpt_json(client, q, face_img, max_tokens=60)
+    return result
 
 
-# ── Stage 3: 各面の窓・ドア検出 ──────────────────────────────────────
+# ── Stage 3b/3d: 各開口のpixel ratio位置取得 ─────────────────────────
 
-def detect_face_openings(face_img_bytes: bytes, face_label: str, width_m: float, eave_height_m: float, api_key: str) -> list:
+def ms_stage3_opening_positions(
+    face_img: bytes, face_label: str, floor_num: int,
+    opening_type: str, count: int,
+    width_m: float, floor_height_m: float, api_key: str,
+) -> list:
     """
-    Stage 3: クロップ済み立面図から窓・ドアを検出する。
-
-    Returns
-    -------
-    list: [{"type": "窓", "x_from_left": m, "z_from_ground": m, "width": m, "height": m}, ...]
+    Stage 3b/3d: {floor_num}階の{opening_type}を1つずつ位置取得。
+    返値: [{"x_ratio": f, "z_ratio": f, "w_ratio": f, "h_ratio": f}, ...]
+    すべて建物外形内の0〜1 ratio（x=左端0,右端1 / z=地面0,軒高1）
     """
     from openai import OpenAI
-    from core.logger import log_gpt_call, log_error
-
     client = OpenAI(api_key=api_key)
-    prompt = f"""これは建築図面の{face_label}（切り抜き済み）です。
-建物の幅: {width_m}m / 軒高: {eave_height_m}m
+    q = f"""これは{face_label}です。
+{floor_num}階に{count}個の{opening_type}があります。
+左から順番に各{opening_type}の位置を答えてください。
 
-この立面図内の窓・ドア・玄関を全て検出してください。
-各開口部について:
-- type: "窓" / "ドア" / "玄関"
-- x_from_left: 建物左端からの距離（m）
-- z_from_ground: 地面からの開口下端の高さ（m）
-- width: 開口幅（m）
-- height: 開口高さ（m）
+座標は建物全体の外形に対する0〜1の割合で表してください:
+- x_ratio: 建物左端=0、右端=1（水平位置・開口中心）
+- z_ratio: 地面=0、軒高=1（垂直位置・開口中心）
+- w_ratio: 建物幅に対する開口幅の割合（例:幅1.6m÷建物幅12.9m=0.124）
+- h_ratio: 建物軒高に対する開口高さの割合
 
-重要な基準:
-- 1階腰窓: z=0.9m程度
-- 1階掃出窓: z=0m
-- 1階ドア: z=0m
-- 2階窓: z=3.5〜4.5m程度（軒高6.5mの2階建て）
-- 窓幅: 通常0.6〜2.0m
-- ドア幅: 通常0.8〜1.0m
+参考: 建物幅={width_m}m / 対象階高={floor_height_m}m
 
-```json
-[
-  {{"type": "窓", "x_from_left": 1.0, "z_from_ground": 0.9, "width": 1.6, "height": 1.2}},
-  {{"type": "ドア", "x_from_left": 5.0, "z_from_ground": 0.0, "width": 0.9, "height": 2.1}}
-]
-```
-
-開口部がなければ空配列 [] を返してください。"""
-    try:
-        result, usage = _call_gpt_vision_json(client, _MS_SYS_OPEN, prompt, face_img_bytes, max_tokens=500)
-        log_gpt_call(
-            func_name="trace_multistage.detect_face_openings",
-            model="gpt-4o",
-            system_prompt=_MS_SYS_OPEN,
-            user_message_summary=f"{face_label}窓ドア検出",
-            response_text=str(result),
-            tokens_total=usage.total_tokens if usage else None,
-        )
-        return result if isinstance(result, list) else []
-    except Exception as e:
-        log_error(f"Stage3エラー({face_label}): detect_face_openings", e, "GPT")
-        return []
+[{{"x_ratio":0.15,"z_ratio":0.25,"w_ratio":0.12,"h_ratio":0.18}}]"""
+    result, _ = _gpt_json(client, q, face_img, max_tokens=300)
+    return result if isinstance(result, list) else []
 
 
 # ── Stage 4: 屋根タイプ判定 ───────────────────────────────────────────
 
-def detect_roof_type(south_img_bytes: bytes, api_key: str) -> str:
-    """Stage 4a: 南面から屋根タイプを判定する。"""
+def ms_stage4_roof_type(south_img: bytes, api_key: str) -> str:
+    """Stage 4: 南面から屋根タイプを判定する。"""
     from openai import OpenAI
     client = OpenAI(api_key=api_key)
-    prompt = """この南立面図の屋根タイプを判定してください。
+    q = """この南立面図の屋根の形状を判定してください。
 
-- 切妻: 三角形の屋根（ガーブルルーフ）
-- 寄棟: 四方に傾斜がある屋根（ヒップルーフ）
-- 片流れ: 一方向だけに傾斜
-- 陸屋根: 平らな屋根
+切妻: 正面から三角形に見える（ガーブル）
+寄棟: 正面から台形に見える（ヒップ）
+片流れ: 一方向だけ傾斜
+陸屋根: 平ら
 
-```json
-{"roof_type": "切妻"}
-```"""
+{"roof_type": "切妻"}"""
     try:
-        result, _ = _call_gpt_vision_json(client, _MS_SYS_ROOF, prompt, south_img_bytes, max_tokens=50)
+        result, _ = _gpt_json(client, q, south_img, max_tokens=40)
         return result.get("roof_type", "寄棟")
     except Exception:
         return "寄棟"
 
 
-# ── Stage 4: 3Dデータ組み立て ─────────────────────────────────────────
+# ── Stage 5: 3Dデータ組み立て ─────────────────────────────────────────
 
-def assemble_multistage_result(
+def ms_stage5_assemble(
     layout: dict,
-    face_dims: dict,
-    face_openings: dict,
-    roof_type: str = "寄棟",
+    face_bounds: dict,       # {face: {left,right,ground,eave}}
+    face_dims: dict,         # {face: {width_m, eave_height_m, ridge_height_m}}
+    face_floor_lines: dict,  # {face: {has_second_floor, floor2_start_y_ratio}}
+    face_setbacks: dict,     # {face: {has_setback, f1_*, f2_*}}
+    face_openings_raw: dict, # {face: {"1F_窓":[ratio_list], "1F_ドア":[...], "2F_窓":[...], ...}}
+    roof_type: str,
 ) -> dict:
     """
-    Stage 4: 各面の解析結果を3Dデータに組み立てる。
-
-    Parameters
-    ----------
-    layout       : detect_face_layout() の結果
-    face_dims    : {face_key: read_face_dimensions()} の結果
-    face_openings: {face_key: detect_face_openings()} の結果
-    roof_type    : detect_roof_type() の結果
-
-    Returns
-    -------
-    building dict（generate_building_3d_html()互換）
+    Stage 5: 各面のすべての解析結果を3Dデータに変換する。
+    pixel ratioをメートル値に変換して返す。
     """
-    # 南面 or 最大幅の面を基準に使用
-    south = face_dims.get("south") or {}
-    east  = face_dims.get("east")  or {}
-    west  = face_dims.get("west")  or {}
+    # 南面優先で基準寸法を決定
+    s_dim = face_dims.get("south") or {}
+    e_dim = face_dims.get("east")  or {}
+    w_dim = face_dims.get("west")  or {}
 
-    total_width  = float(south.get("width_m") or
+    total_width  = float(s_dim.get("width_m") or
                          max((v.get("width_m") or 0 for v in face_dims.values()), default=10.0))
-    eave_height  = float(south.get("eave_height_m") or
+    eave_height  = float(s_dim.get("eave_height_m") or
                          next((v.get("eave_height_m") for v in face_dims.values() if v.get("eave_height_m")), 6.0))
-    ridge_height = float(south.get("ridge_height_m") or
+    ridge_height = float(s_dim.get("ridge_height_m") or
                          next((v.get("ridge_height_m") for v in face_dims.values() if v.get("ridge_height_m")), eave_height + 1.5))
+    total_depth  = float(e_dim.get("width_m") or w_dim.get("width_m") or round(total_width * 0.72, 2))
 
-    # 東西面から奥行き取得（東面の幅=奥行）
-    total_depth = float(east.get("width_m") or west.get("width_m") or round(total_width * 0.72, 2))
+    # 南面のfloor_line から1F高さを計算
+    s_fl = face_floor_lines.get("south") or {}
+    floor2_y = s_fl.get("floor2_start_y_ratio")
+    s_bounds = face_bounds.get("south") or {}
+    ground_y = s_bounds.get("ground", 0.8)
+    eave_y   = s_bounds.get("eave",   0.2)
+    bldg_span_y = ground_y - eave_y if ground_y > eave_y else 0.6
 
-    # 全面のopeningsを統合（face付き）
-    openings_all = []
-    for face_key, ops in face_openings.items():
-        for op in ops:
-            openings_all.append({
-                "face":   face_key,
-                "type":   op.get("type", "窓"),
-                "x":      round(float(op.get("x_from_left") or 0), 2),
-                "y":      0,
-                "z":      round(float(op.get("z_from_ground") or 0), 2),
-                "width":  round(float(op.get("width")  or 1.0), 2),
-                "height": round(float(op.get("height") or 1.0), 2),
-            })
+    if s_fl.get("has_second_floor") and floor2_y is not None and bldg_span_y > 0:
+        # floor2_start_y_ratio は画像全体の割合なので、建物内での割合に変換
+        f2_frac = (ground_y - floor2_y) / bldg_span_y  # 地面からの割合
+        floor1_h = round(eave_height * f2_frac, 2)
+        floor2_h = round(eave_height - floor1_h, 2)
+        stories  = [{"floor": 1, "floor_height": floor1_h}, {"floor": 2, "floor_height": floor2_h}]
+    else:
+        floor1_h = eave_height
+        floor2_h = 0.0
+        stories  = []
 
-    # floor_footprints: 2階が1階より狭いかを各面の幅から推定
-    # 南面幅=建物幅（1F）/ 北面幅が違えばセットバックの可能性
+    # セットバック → floor_footprints
+    s_sb = face_setbacks.get("south") or {}
     floor_footprints = []
-    south_w = float((face_dims.get("south") or {}).get("width_m") or 0)
-    if south_w > 0:
-        # 1Fのみ（セットバック検出は今後の改善余地あり）
-        floor_footprints = []  # DrawingAnalyzerのannotationsで補完される
+    if s_sb.get("has_setback") and floor2_h > 0:
+        f1l = float(s_sb.get("f1_left_ratio",  0.0))
+        f1r = float(s_sb.get("f1_right_ratio", 1.0))
+        f2l = float(s_sb.get("f2_left_ratio",  0.05))
+        f2r = float(s_sb.get("f2_right_ratio", 0.95))
+        f1w = total_width * (f1r - f1l)
+        f2w = total_width * (f2r - f2l)
+        x_off = total_width * (f2l - f1l)
+        floor_footprints = [
+            {"floor": 1, "width": round(f1w, 2), "depth": total_depth,
+             "x_offset": 0.0, "z_offset": 0.0, "floor_height": floor1_h},
+            {"floor": 2, "width": round(f2w, 2), "depth": total_depth,
+             "x_offset": round(x_off, 2), "z_offset": 0.0, "floor_height": floor2_h},
+        ]
 
-    # サマリー文字列
+    # openings（pixel ratio → メートル変換）
+    openings_all = []
+    face_order = {"south": "south", "north": "north", "east": "east", "west": "west"}
+    for face_key in face_order:
+        ops_raw = face_openings_raw.get(face_key) or {}
+        for floor_key, items in ops_raw.items():
+            # floor_key 例: "1F_窓", "2F_ドア"
+            parts = floor_key.split("_")
+            f_num  = int(parts[0][0]) if parts and parts[0][0].isdigit() else 1
+            o_type = parts[1] if len(parts) > 1 else "窓"
+
+            # このfloorの地面からの高さオフセット
+            z_offset = 0.0
+            if f_num == 2 and floor1_h > 0:
+                z_offset = floor1_h
+
+            for op in items:
+                xr = float(op.get("x_ratio", 0.5))
+                zr = float(op.get("z_ratio", 0.5))
+                wr = float(op.get("w_ratio", 0.1))
+                hr = float(op.get("h_ratio", 0.15))
+
+                # x: 建物幅に対するratio→メートル（左端基準）
+                op_w = round(wr * total_width, 2)
+                op_h = round(hr * eave_height, 2)
+                # x_ratio は中心位置なので左端に変換
+                op_x = round(xr * total_width - op_w / 2, 2)
+                # z: 地面からの高さ
+                floor_h = floor1_h if f_num == 1 else floor2_h
+                if floor_h < 0.1: floor_h = eave_height
+                op_z = round(z_offset + zr * floor_h - op_h / 2, 2)
+                op_z = max(0.0, op_z)
+
+                openings_all.append({
+                    "face":   face_key,
+                    "type":   o_type,
+                    "x":      op_x,
+                    "y":      0,
+                    "z":      op_z,
+                    "width":  max(0.3, op_w),
+                    "height": max(0.3, op_h),
+                })
+
     detected_faces = [k for k in face_dims if face_dims[k].get("width_m")]
-    note = (f"多段階解析: {len(detected_faces)}面検出({', '.join(detected_faces)}) | "
-            f"南面幅{total_width}m / 軒高{eave_height}m / 棟高{ridge_height}m / 奥行{total_depth}m")
+    note = (f"多段階v2: {len(detected_faces)}面 | "
+            f"幅{total_width}m / 軒高{eave_height}m / 棟高{ridge_height}m / 奥行{total_depth}m"
+            + (f" / セットバック検出" if floor_footprints else ""))
 
     return {
-        "building_type": "立面図（多段階解析）",
+        "building_type": "立面図（多段階v2）",
         "note": note,
         "dimensions": {
             "total_width":  total_width,
@@ -678,19 +746,15 @@ def assemble_multistage_result(
             "eave_height":  eave_height,
             "ridge_height": ridge_height,
         },
-        "walls": [],           # generate_building_3d_html がBW/BD/EHから自動生成
-        "roof": {
-            "type":         roof_type,
-            "eave_height":  eave_height,
-            "ridge_height": ridge_height,
-        },
+        "walls": [],
+        "roof": {"type": roof_type, "eave_height": eave_height, "ridge_height": ridge_height},
         "openings":        openings_all,
-        "floors": [
-            {"label": "基礎", "x": 0, "y": 0, "z": -0.3,
-             "width": total_width, "depth": total_depth, "height": 0.3}
-        ],
+        "floors": [{"label": "基礎", "x": 0, "y": 0, "z": -0.3,
+                    "width": total_width, "depth": total_depth, "height": 0.3}],
         "floor_footprints": floor_footprints,
-        "_pipeline":   "multistage_v1",
+        "stories": stories,
+        "_pipeline":   "multistage_v2",
         "_face_dims":  face_dims,
+        "_face_setbacks": face_setbacks,
         "_layout":     {k: v for k, v in layout.items() if k != "_stage"},
     }

@@ -1661,128 +1661,180 @@ elif st.session_state.step == 2:
                                     st.image(st.session_state["_3d_trace_png"], use_container_width=True)
 
                                 with _m3:
-                                    st.markdown("##### 🧩 方法3: 多段階精密解析（NEW）")
+                                    st.markdown("##### 🧩 方法3: 多段階精密解析 v2")
                                     st.caption(
-                                        "**Stage1**: 各立面図（南/北/東/西）の位置を特定  \n"
-                                        "**Stage2**: 各面をクロップ→寸法を個別読み取り  \n"
-                                        "**Stage3**: 各面をクロップ→窓・ドアを個別検出  \n"
-                                        "**Stage4**: 全面データを統合→3D生成  \n"
-                                        "※ 元図面画像（drawing_page1_raw）が必要です"
+                                        "**2a**: 建物外形ratio → **2b**: 寸法数値読取 → **2c**: 1F/2F境界 → "
+                                        "**2d**: セットバック検出 → **3a-e**: 階ごとに窓数→位置 → **4**: 屋根判定 → **5**: 3D組み立て  \n"
+                                        "⚠️ 各面を個別クロップして解析。annotationsによる上書きなし。"
                                     )
-                                    _orig_img = st.session_state.get("drawing_page1_raw")
-                                    if not _orig_img:
-                                        st.warning("先にSTEP2で図面を解析してください（drawing_page1_rawが必要）")
+                                    _ms2_orig = st.session_state.get("drawing_page1_raw")
+                                    if not _ms2_orig:
+                                        st.warning("先にSTEP2で図面を解析してください")
                                     else:
-                                        if st.button("🧩 多段階精密解析を実行", type="primary", key="btn_3d_multi"):
+                                        if st.button("🧩 多段階v2を実行", type="primary", key="btn_3d_multi2"):
                                             from core.trace_analyzer import (
-                                                detect_face_layout, read_face_dimensions,
-                                                detect_face_openings, detect_roof_type,
-                                                assemble_multistage_result, _crop_by_ratio,
+                                                ms_stage1_layout, ms_stage2a_bounds, ms_stage2b_dims,
+                                                ms_stage2c_floor_line, ms_stage2d_setback,
+                                                ms_stage3_count_openings, ms_stage3_opening_positions,
+                                                ms_stage4_roof_type, ms_stage5_assemble, _crop_r,
                                             )
                                             from modules.llm_client import _get_api_key
-                                            _ms_api_key = _get_api_key()
-                                            _ms_log = []
+                                            _msv2_key = _get_api_key()
+                                            _face_lmap = {"south":"南立面図","north":"北立面図","east":"東立面図","west":"西立面図"}
 
-                                            # Stage 1: 各面の位置特定
-                                            with st.spinner("Stage1: 各立面図（南/北/東/西）の位置を特定中…"):
+                                            # ── Stage 1: 各面の位置特定 ──
+                                            with st.spinner("Stage 1: 各立面図（南/北/東/西）の位置を特定中…"):
                                                 try:
-                                                    _ms_layout = detect_face_layout(_orig_img, _ms_api_key)
-                                                    _ms_valid = {k: v for k, v in _ms_layout.items()
-                                                                 if k in ("south","north","east","west") and isinstance(v, dict)}
-                                                    st.success(f"Stage1完了: {len(_ms_valid)}面を検出 ({', '.join(_ms_valid.keys())})")
-                                                    _ms_log.append({"stage": 1, "faces": list(_ms_valid.keys())})
-                                                except Exception as _ms_e1:
-                                                    st.error(f"Stage1失敗: {_ms_e1}")
-                                                    _ms_valid = {}
+                                                    _msv2_layout = ms_stage1_layout(_ms2_orig, _msv2_key)
+                                                    _msv2_valid = {k: v for k, v in _msv2_layout.items()
+                                                                   if k in ("south","north","east","west") and isinstance(v, dict)}
+                                                    st.success(f"Stage1完了: {len(_msv2_valid)}面検出 ({', '.join(_msv2_valid.keys())})")
+                                                except Exception as _e:
+                                                    st.error(f"Stage1失敗: {_e}")
+                                                    _msv2_valid = {}
 
-                                            _ms_face_dims = {}
-                                            _ms_face_opens = {}
-                                            _face_label_map = {"south":"南面","north":"北面","east":"東面","west":"西面"}
+                                            if not _msv2_valid:
+                                                st.stop()
 
-                                            if _ms_valid:
-                                                # Stage 2: 各面の寸法読み取り
-                                                for _ms_fk, _ms_freg in _ms_valid.items():
-                                                    _ms_flabel = _face_label_map.get(_ms_fk, _ms_fk)
-                                                    with st.spinner(f"Stage2: {_ms_flabel}の寸法を読み取り中…"):
+                                            _msv2_bounds      = {}
+                                            _msv2_dims        = {}
+                                            _msv2_floor_lines = {}
+                                            _msv2_setbacks    = {}
+                                            _msv2_openings    = {}
+
+                                            for _msv2_fk, _msv2_freg in _msv2_valid.items():
+                                                _fl = _face_lmap.get(_msv2_fk, _msv2_fk)
+                                                _fc = _crop_r(_ms2_orig, _msv2_freg["x1"], _msv2_freg["y1"],
+                                                              _msv2_freg["x2"], _msv2_freg["y2"])
+
+                                                # Stage 2a: 建物外形ratio
+                                                with st.spinner(f"Stage 2a [{_fl}]: 建物外形を特定中…"):
+                                                    try:
+                                                        _msv2_bounds[_msv2_fk] = ms_stage2a_bounds(_fc, _fl, _msv2_key)
+                                                        _b = _msv2_bounds[_msv2_fk]
+                                                        st.success(f"  {_fl}: left={_b.get('left'):.2f} right={_b.get('right'):.2f} ground={_b.get('ground'):.2f} eave={_b.get('eave'):.2f}")
+                                                    except Exception as _e:
+                                                        st.warning(f"  {_fl} 2a失敗: {_e}")
+                                                        _msv2_bounds[_msv2_fk] = {}
+
+                                                # Stage 2b: 寸法数値読取
+                                                with st.spinner(f"Stage 2b [{_fl}]: 寸法数値を読み取り中…"):
+                                                    try:
+                                                        _msv2_dims[_msv2_fk] = ms_stage2b_dims(_fc, _fl, _msv2_key)
+                                                        _d = _msv2_dims[_msv2_fk]
+                                                        st.success(f"  {_fl}: 幅={_d.get('width_m')}m / 軒高={_d.get('eave_height_m')}m / 棟高={_d.get('ridge_height_m')}m")
+                                                    except Exception as _e:
+                                                        st.warning(f"  {_fl} 2b失敗: {_e}")
+                                                        _msv2_dims[_msv2_fk] = {}
+
+                                                # Stage 2c: 1F/2F境界線
+                                                with st.spinner(f"Stage 2c [{_fl}]: 1F/2F境界線を検出中…"):
+                                                    try:
+                                                        _msv2_floor_lines[_msv2_fk] = ms_stage2c_floor_line(_fc, _fl, _msv2_key)
+                                                        _fl2 = _msv2_floor_lines[_msv2_fk]
+                                                        if _fl2.get("has_second_floor"):
+                                                            st.success(f"  {_fl}: 2階あり / 境界y={_fl2.get('floor2_start_y_ratio'):.3f}")
+                                                        else:
+                                                            st.success(f"  {_fl}: 平屋 or 1階建て")
+                                                    except Exception as _e:
+                                                        st.warning(f"  {_fl} 2c失敗: {_e}")
+                                                        _msv2_floor_lines[_msv2_fk] = {}
+
+                                                # Stage 2d: セットバック検出
+                                                with st.spinner(f"Stage 2d [{_fl}]: セットバック（凸凹）を検出中…"):
+                                                    try:
+                                                        _msv2_setbacks[_msv2_fk] = ms_stage2d_setback(_fc, _fl, _msv2_key)
+                                                        _sb = _msv2_setbacks[_msv2_fk]
+                                                        if _sb.get("has_setback"):
+                                                            st.success(f"  {_fl}: セットバックあり / 1F={_sb.get('f1_left_ratio'):.2f}〜{_sb.get('f1_right_ratio'):.2f} / 2F={_sb.get('f2_left_ratio'):.2f}〜{_sb.get('f2_right_ratio'):.2f}")
+                                                        else:
+                                                            st.success(f"  {_fl}: セットバックなし（長方形）")
+                                                    except Exception as _e:
+                                                        st.warning(f"  {_fl} 2d失敗: {_e}")
+                                                        _msv2_setbacks[_msv2_fk] = {}
+
+                                                # Stage 3: 各階ごとに窓・ドア検出
+                                                _msv2_openings[_msv2_fk] = {}
+                                                _has2f = (_msv2_floor_lines.get(_msv2_fk) or {}).get("has_second_floor", False)
+                                                _floors_to_check = [1, 2] if _has2f else [1]
+                                                _msv2_w = float((_msv2_dims.get(_msv2_fk) or {}).get("width_m") or 10.0)
+                                                _msv2_eh = float((_msv2_dims.get(_msv2_fk) or {}).get("eave_height_m") or 6.0)
+
+                                                for _fn in _floors_to_check:
+                                                    _fh = _msv2_eh / len(_floors_to_check)
+
+                                                    # Stage 3a/3c: 窓数カウント
+                                                    with st.spinner(f"Stage 3 [{_fl}] {_fn}F: 窓・ドア数を数え中…"):
                                                         try:
-                                                            _ms_crop = _crop_by_ratio(
-                                                                _orig_img,
-                                                                _ms_freg["x1"], _ms_freg["y1"],
-                                                                _ms_freg["x2"], _ms_freg["y2"],
-                                                            )
-                                                            _ms_dim = read_face_dimensions(_ms_crop, _ms_flabel, _ms_api_key)
-                                                            _ms_face_dims[_ms_fk] = _ms_dim
-                                                            _ms_log.append({"stage": 2, "face": _ms_fk, "dims": _ms_dim})
-                                                            st.success(f"  {_ms_flabel}: 幅={_ms_dim.get('width_m')}m / 軒高={_ms_dim.get('eave_height_m')}m / 棟高={_ms_dim.get('ridge_height_m')}m")
-                                                        except Exception as _ms_e2:
-                                                            st.warning(f"  {_ms_flabel}寸法読み取り失敗: {_ms_e2}")
-                                                            _ms_face_dims[_ms_fk] = {}
+                                                            _cnt = ms_stage3_count_openings(_fc, _fl, _fn, _msv2_key)
+                                                            _wcnt = int(_cnt.get("window_count") or 0)
+                                                            _dcnt = int(_cnt.get("door_count") or 0)
+                                                            st.success(f"  {_fl} {_fn}F: 窓{_wcnt}個 / ドア{_dcnt}個")
+                                                        except Exception as _e:
+                                                            st.warning(f"  {_fl} {_fn}F カウント失敗: {_e}")
+                                                            _wcnt = _dcnt = 0
 
-                                                # Stage 3: 各面の窓・ドア検出
-                                                for _ms_fk, _ms_freg in _ms_valid.items():
-                                                    _ms_flabel = _face_label_map.get(_ms_fk, _ms_fk)
-                                                    _ms_w = float((_ms_face_dims.get(_ms_fk) or {}).get("width_m") or 10.0)
-                                                    _ms_h = float((_ms_face_dims.get(_ms_fk) or {}).get("eave_height_m") or 6.0)
-                                                    with st.spinner(f"Stage3: {_ms_flabel}の窓・ドアを検出中…"):
-                                                        try:
-                                                            _ms_crop2 = _crop_by_ratio(
-                                                                _orig_img,
-                                                                _ms_freg["x1"], _ms_freg["y1"],
-                                                                _ms_freg["x2"], _ms_freg["y2"],
-                                                            )
-                                                            _ms_ops = detect_face_openings(_ms_crop2, _ms_flabel, _ms_w, _ms_h, _ms_api_key)
-                                                            _ms_face_opens[_ms_fk] = _ms_ops
-                                                            _ms_log.append({"stage": 3, "face": _ms_fk, "count": len(_ms_ops)})
-                                                            st.success(f"  {_ms_flabel}: {len(_ms_ops)}個の開口部を検出")
-                                                        except Exception as _ms_e3:
-                                                            st.warning(f"  {_ms_flabel}開口部検出失敗: {_ms_e3}")
-                                                            _ms_face_opens[_ms_fk] = []
+                                                    # Stage 3b/3d: 窓の位置
+                                                    if _wcnt > 0:
+                                                        with st.spinner(f"Stage 3 [{_fl}] {_fn}F: {_wcnt}個の窓の位置を取得中…"):
+                                                            try:
+                                                                _wops = ms_stage3_opening_positions(
+                                                                    _fc, _fl, _fn, "窓", _wcnt, _msv2_w, _fh, _msv2_key)
+                                                                _msv2_openings[_msv2_fk][f"{_fn}F_窓"] = _wops
+                                                                st.success(f"  {_fl} {_fn}F 窓: {len(_wops)}個の位置取得")
+                                                            except Exception as _e:
+                                                                st.warning(f"  窓位置取得失敗: {_e}")
 
-                                                # Stage 3b: 屋根タイプ判定（南面から）
-                                                _ms_roof_type = "寄棟"
-                                                if "south" in _ms_valid:
-                                                    with st.spinner("Stage3b: 屋根タイプを判定中…"):
-                                                        try:
-                                                            _ms_south_crop = _crop_by_ratio(
-                                                                _orig_img,
-                                                                _ms_valid["south"]["x1"], _ms_valid["south"]["y1"],
-                                                                _ms_valid["south"]["x2"], _ms_valid["south"]["y2"],
-                                                            )
-                                                            _ms_roof_type = detect_roof_type(_ms_south_crop, _ms_api_key)
-                                                            st.success(f"  屋根タイプ: {_ms_roof_type}")
-                                                        except Exception:
-                                                            pass
+                                                    # Stage 3e: ドアの位置
+                                                    if _dcnt > 0:
+                                                        with st.spinner(f"Stage 3 [{_fl}] {_fn}F: {_dcnt}個のドアの位置を取得中…"):
+                                                            try:
+                                                                _dops = ms_stage3_opening_positions(
+                                                                    _fc, _fl, _fn, "ドア", _dcnt, _msv2_w, _fh, _msv2_key)
+                                                                _msv2_openings[_msv2_fk][f"{_fn}F_ドア"] = _dops
+                                                                st.success(f"  {_fl} {_fn}F ドア: {len(_dops)}個の位置取得")
+                                                            except Exception as _e:
+                                                                st.warning(f"  ドア位置取得失敗: {_e}")
 
-                                                # Stage 4: 3Dデータ組み立て
-                                                with st.spinner("Stage4: 解析結果を3Dデータに統合中…"):
-                                                    _ms_bldg = assemble_multistage_result(
-                                                        layout=_ms_layout,
-                                                        face_dims=_ms_face_dims,
-                                                        face_openings=_ms_face_opens,
-                                                        roof_type=_ms_roof_type,
-                                                    )
-                                                    # DrawingAnalyzerの寸法補正を適用（annotationsあれば）
-                                                    _ms_ann = st.session_state.get("drawing_annotations") or []
-                                                    if _ms_ann:
-                                                        from core.building_3d_generator import build_3d_from_annotations
-                                                        _ms_faces_data = st.session_state.get("drawing_data", {}).get("faces")
-                                                        _ms_fps = (st.session_state.get("floor_plan_data") or {}).get("floor_footprints") or []
-                                                        _ms_ann_data = build_3d_from_annotations(_ms_ann, faces=_ms_faces_data, floor_footprints=_ms_fps)
-                                                        if "error" not in _ms_ann_data:
-                                                            _ms_bldg["dimensions"].update(_ms_ann_data["dimensions"])
-                                                            _ms_bldg["roof"]["eave_height"]  = _ms_ann_data["dimensions"]["eave_height"]
-                                                            _ms_bldg["roof"]["ridge_height"] = _ms_ann_data["dimensions"]["ridge_height"]
-                                                            if _ms_ann_data.get("roof", {}).get("type"):
-                                                                _ms_bldg["roof"]["type"] = _ms_ann_data["roof"]["type"]
-                                                            if _ms_ann_data.get("openings"):
-                                                                _ms_bldg["openings"] = _ms_ann_data["openings"]
-                                                            _ms_dd_fps = (st.session_state.get("drawing_data") or {}).get("floor_footprints") or []
-                                                            _ms_ann_fps = _ms_ann_data.get("floor_footprints") or []
-                                                            _ms_bldg["floor_footprints"] = _ms_ann_fps or _ms_dd_fps or []
-                                                            _ms_bldg["note"] += " ／ 寸法補正済"
-                                                            _ms_bldg["_pipeline"] = "multistage_v1+annotations"
-                                                    st.session_state["building_3d_data"] = _ms_bldg
-                                                    st.success(f"✅ Stage4完了: {_ms_bldg['note'][:100]}")
+                                            # Stage 4: 屋根タイプ
+                                            _msv2_roof = "寄棟"
+                                            if "south" in _msv2_valid:
+                                                with st.spinner("Stage 4: 屋根タイプを判定中…"):
+                                                    try:
+                                                        _sc = _crop_r(_ms2_orig, _msv2_valid["south"]["x1"], _msv2_valid["south"]["y1"],
+                                                                      _msv2_valid["south"]["x2"], _msv2_valid["south"]["y2"])
+                                                        _msv2_roof = ms_stage4_roof_type(_sc, _msv2_key)
+                                                        st.success(f"Stage4完了: 屋根タイプ={_msv2_roof}")
+                                                    except Exception as _e:
+                                                        st.warning(f"Stage4失敗: {_e}")
+
+                                            # Stage 5: 3Dデータ組み立て
+                                            with st.spinner("Stage 5: 全データを3Dデータに統合中…"):
+                                                _msv2_bldg = ms_stage5_assemble(
+                                                    layout        = _msv2_layout,
+                                                    face_bounds   = _msv2_bounds,
+                                                    face_dims     = _msv2_dims,
+                                                    face_floor_lines = _msv2_floor_lines,
+                                                    face_setbacks = _msv2_setbacks,
+                                                    face_openings_raw = _msv2_openings,
+                                                    roof_type     = _msv2_roof,
+                                                )
+                                                # DrawingAnalyzerの寸法のみ補正（openings/footprintsは上書きしない）
+                                                _msv2_ann = st.session_state.get("drawing_annotations") or []
+                                                if _msv2_ann:
+                                                    from core.building_3d_generator import build_3d_from_annotations
+                                                    _msv2_ann_data = build_3d_from_annotations(_msv2_ann)
+                                                    if "error" not in _msv2_ann_data:
+                                                        # 寸法のみ補正（footprints・openingsは多段階の結果を優先）
+                                                        _msv2_bldg["dimensions"].update(_msv2_ann_data["dimensions"])
+                                                        _msv2_bldg["roof"]["eave_height"]  = _msv2_ann_data["dimensions"]["eave_height"]
+                                                        _msv2_bldg["roof"]["ridge_height"] = _msv2_ann_data["dimensions"]["ridge_height"]
+                                                        if not _msv2_bldg["floor_footprints"] and _msv2_ann_data.get("floor_footprints"):
+                                                            _msv2_bldg["floor_footprints"] = _msv2_ann_data["floor_footprints"]
+                                                        _msv2_bldg["note"] += " ／ 寸法補正済"
+                                                        _msv2_bldg["_pipeline"] = "multistage_v2+annotations"
+                                                st.session_state["building_3d_data"] = _msv2_bldg
+                                                st.success(f"✅ Stage5完了: {_msv2_bldg['note'][:120]}")
 
 
                             with _3d_result_tab:
@@ -1796,6 +1848,8 @@ elif st.session_state.step == 2:
                                         "direct_fallback": "🔮 GPT直接解析",
                                         "multistage_v1": "🧩 多段階精密解析",
                                         "multistage_v1+annotations": "🧩 多段階解析+寸法補正",
+                                        "multistage_v2": "🧩 多段階v2",
+                                        "multistage_v2+annotations": "🧩 多段階v2+寸法補正",
                                     }.get(_pipe, "🔮 直接解析")
                                     st.caption(f"使用パイプライン: {_pipe_label} | {_bdata.get('note','')[:100]}")
                                     from core.building_3d_generator import generate_building_3d_html
