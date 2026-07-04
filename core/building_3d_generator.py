@@ -202,9 +202,14 @@ def _faces_to_openings(faces: dict, bw: float, bd: float, eave_h: float) -> list
             ow = float(op.get("width") or 1.0)
             oh = float(op.get("height") or 1.2)
             op_type = op.get("type", "窓")
-            # 高さ: ドアは地面から、窓は軒高の約40%
-            oz = 0.1 if op_type == "ドア" else round(eave_h * 0.40, 2)
-            # 平面図から正確なx_from_leftがあればそれを優先、なければ均等分布
+            # z_from_floor: 立面図/平面図で取得した正確な値を優先、なければ推定
+            if op.get("z_from_floor") is not None:
+                oz = round(float(op["z_from_floor"]), 2)
+            elif op_type == "ドア" or op_type == "玄関":
+                oz = 0.1
+            else:
+                oz = round(eave_h * 0.40, 2)
+            # x_from_left: 立面図/平面図で取得した正確な値を優先、なければ均等分布
             if op.get("x_from_left") is not None:
                 pos = round(float(op["x_from_left"]), 2)
             else:
@@ -267,6 +272,24 @@ def build_3d_from_annotations(annotations: list, roof_type: str = "寄棟", face
     for a in (widths + heights):
         note_parts.append(f"{a.get('label','')}={a.get('value','')}{a.get('unit','m')}")
     note = "DrawingAnalyzer抽出値: " + " / ".join(note_parts[:6])
+
+    # faces の floor_widths から floor_footprints を自動生成（立面図プロンプト改善で取得可能）
+    if not floor_footprints and faces:
+        _fw_s = (faces.get("south") or {}).get("floor_widths") or {}
+        _fw_e = (faces.get("east")  or {}).get("floor_widths") or {}
+        _f1w = float(_fw_s.get("floor_1") or total_width)
+        _f2w = float(_fw_s.get("floor_2") or 0)
+        _f1d = float(_fw_e.get("floor_1") or total_depth)
+        _f2d = float(_fw_e.get("floor_2") or 0)
+        if _f2w > 0 and abs(_f1w - _f2w) > 0.3:
+            _f1h = floor1_h
+            _f2h = max(round(eave_height - _f1h, 1), 2.0)
+            _x_off = round((_f1w - _f2w) / 2.0, 2)
+            _z_off = round((_f1d - _f2d) / 2.0, 2) if _f2d > 0 and abs(_f1d - _f2d) > 0.3 else 0.0
+            floor_footprints = [
+                {"floor": 1, "width": _f1w, "depth": _f1d if _f1d > 0 else None, "x_offset": 0.0, "z_offset": 0.0, "floor_height": round(_f1h, 1)},
+                {"floor": 2, "width": _f2w, "depth": _f2d if _f2d > 0 else None, "x_offset": _x_off, "z_offset": _z_off, "floor_height": _f2h},
+            ]
 
     return {
         "building_type": "立面図",
