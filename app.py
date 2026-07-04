@@ -1513,7 +1513,7 @@ elif st.session_state.step == 2:
 
                             with _3d_mode_tab:
                                 st.markdown("**方法を選んで実行してください**")
-                                _m1, _m2, _m3 = st.columns(3)
+                                _m1, _m2, _m3, _m4 = st.columns(4)
 
                                 with _m1:
                                     st.markdown("##### 🔮 方法1: 図面直接解析")
@@ -1868,6 +1868,78 @@ elif st.session_state.step == 2:
                                                 st.success(f"✅ Stage5完了: {_msv2_bldg['note'][:120]}")
 
 
+                                with _m4:
+                                    st.markdown("##### 📐 方法4: 線解析→3D（推奨）")
+                                    st.caption("検出線の実寸座標を直接3Dに使用。GPTは面ラベルと屋根タイプ判定のみ。")
+                                    _m4_orig = st.session_state.get("drawing_page1_raw")
+                                    if not _m4_orig:
+                                        st.warning("先にSTEP2で図面を解析してください")
+                                    else:
+                                        # 縮尺設定
+                                        _m4_scale = st.number_input("縮尺分母 (S=1/○○)", min_value=50, max_value=500,
+                                                                     value=100, step=50, key="m4_scale")
+                                        # 面割当: 自動 or 手動
+                                        _m4_auto = st.checkbox("面ラベルを自動検出（GPT）", value=True, key="m4_auto")
+                                        if not _m4_auto:
+                                            st.caption("各象限に表示されている立面図を選択してください")
+                                            _q1, _q2 = st.columns(2)
+                                            _face_opts = ["south（南）","north（北）","east（東）","west（西）","skip"]
+                                            _tl = _q1.selectbox("左上", _face_opts, index=3, key="m4_tl")
+                                            _tr = _q2.selectbox("右上", _face_opts, index=0, key="m4_tr")
+                                            _bl = _q1.selectbox("左下", _face_opts, index=1, key="m4_bl")
+                                            _br = _q2.selectbox("右下", _face_opts, index=2, key="m4_br")
+                                            def _parse_face(s): return s.split("（")[0]
+                                            _m4_manual_regions = {}
+                                            for quad, sel, coords in [
+                                                ("top_left",    _tl, (0.0,0.0,0.5,0.5)),
+                                                ("top_right",   _tr, (0.5,0.0,1.0,0.5)),
+                                                ("bottom_left", _bl, (0.0,0.5,0.5,1.0)),
+                                                ("bottom_right",_br, (0.5,0.5,1.0,1.0)),
+                                            ]:
+                                                f = _parse_face(sel)
+                                                if f in ("south","north","east","west"):
+                                                    _m4_manual_regions[f] = coords
+                                        else:
+                                            _m4_manual_regions = None
+
+                                        if st.button("📐 線解析→3D を実行", type="primary", key="btn_m4"):
+                                            from modules.llm_client import _get_api_key
+                                            from core.line_3d_builder import build_3d_from_line_analysis
+                                            _m4_key = _get_api_key()
+                                            _m4_ann_dims = None
+                                            _m4_dd = st.session_state.get("drawing_data") or {}
+                                            _m4_ann = st.session_state.get("drawing_annotations") or []
+                                            if _m4_ann:
+                                                from core.building_3d_generator import build_3d_from_annotations
+                                                _m4_tmp = build_3d_from_annotations(_m4_ann)
+                                                if "error" not in _m4_tmp:
+                                                    _m4_ann_dims = _m4_tmp.get("dimensions")
+                                            _m4_stages = []
+                                            def _m4_progress(stage, msg):
+                                                _m4_stages.append(f"[{stage}] {msg}")
+                                                st.session_state["_m4_progress"] = list(_m4_stages)
+                                            with st.spinner("線解析→3D 実行中…"):
+                                                try:
+                                                    _m4_result = build_3d_from_line_analysis(
+                                                        img_bytes        = _m4_orig,
+                                                        scale            = _m4_scale,
+                                                        api_key          = _m4_key,
+                                                        face_regions     = _m4_manual_regions,
+                                                        annotations_dims = _m4_ann_dims,
+                                                        progress_callback= _m4_progress,
+                                                    )
+                                                    st.session_state["building_3d_data"] = _m4_result
+                                                    st.session_state["_m4_face_regions"] = _m4_result.get("_face_regions")
+                                                    st.success(f"✅ 完了: {_m4_result.get('note','')[:120]}")
+                                                    # 進捗ログ表示
+                                                    with st.expander("🔍 解析ログ"):
+                                                        for _log in st.session_state.get("_m4_progress",[]):
+                                                            st.caption(_log)
+                                                except Exception as _m4_e:
+                                                    st.error(f"線解析失敗: {_m4_e}")
+                                                    import traceback
+                                                    st.code(traceback.format_exc())
+
                             with _3d_result_tab:
                                 _bdata = st.session_state.get("building_3d_data")
                                 if _bdata and "error" not in _bdata:
@@ -1881,6 +1953,7 @@ elif st.session_state.step == 2:
                                         "multistage_v1+annotations": "🧩 多段階解析+寸法補正",
                                         "multistage_v2": "🧩 多段階v2",
                                         "multistage_v2+annotations": "🧩 多段階v2+寸法補正",
+                                        "line_analysis_v1": "📐 線解析→3D",
                                     }.get(_pipe, "🔮 直接解析")
                                     st.caption(f"使用パイプライン: {_pipe_label} | {_bdata.get('note','')[:100]}")
                                     from core.building_3d_generator import generate_building_3d_html
