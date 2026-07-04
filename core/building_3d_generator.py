@@ -370,7 +370,7 @@ function addBox(x,y,z,w,h,d,color,label,dimText){
   if(w<=0||h<=0||d<=0)return null;
   const geo=new THREE.BoxGeometry(w,h,d);
   const col=parseInt((color||'#888888').replace('#',''),16);
-  const mat=new THREE.MeshLambertMaterial({color:col,transparent:true,opacity:0.88,side:THREE.DoubleSide});
+  const mat=new THREE.MeshLambertMaterial({color:col,side:THREE.FrontSide});
   const mesh=new THREE.Mesh(geo,mat);
   mesh.position.set(x+w/2,y+h/2,z+d/2);
   mesh.castShadow=true;mesh.receiveShadow=true;
@@ -378,7 +378,7 @@ function addBox(x,y,z,w,h,d,color,label,dimText){
   scene.add(mesh);
   if(label){
     const edges=new THREE.EdgesGeometry(geo);
-    mesh.add(new THREE.LineSegments(edges,new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:0.2})));
+    // edges removed: walls are opaque, edge lines not needed
     clickable.push(mesh);
   }
   return mesh;}
@@ -394,8 +394,8 @@ const walls=BUILDING.walls||[];
 if(walls.length===0){
   addBox(OX,0,OZ,BW,EH,0.2,'#c8b89a','南壁','幅'+BW+'m × 高'+EH+'m');
   addBox(OX,0,OZ+BD-0.2,BW,EH,0.2,'#c8b89a','北壁','幅'+BW+'m × 高'+EH+'m');
-  addBox(OX,0,OZ,0.2,EH,BD,'#c0b090','西壁','奥行'+BD+'m × 高'+EH+'m');
-  addBox(OX+BW-0.2,0,OZ,0.2,EH,BD,'#c0b090','東壁','奥行'+BD+'m × 高'+EH+'m');
+  addBox(OX,0,OZ+0.2,0.2,EH,BD-0.4,'#c0b090','西壁','奥行'+BD+'m × 高'+EH+'m');
+  addBox(OX+BW-0.2,0,OZ+0.2,0.2,EH,BD-0.4,'#c0b090','東壁','奥行'+BD+'m × 高'+EH+'m');
 }else{
   walls.forEach(w=>{
     addBox(OX+(w.x||0),w.z||0,OZ+(w.y||0),w.width||BW,w.height||EH,w.depth||0.2,
