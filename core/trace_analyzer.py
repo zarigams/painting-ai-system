@@ -494,18 +494,36 @@ eave: 軒先ライン（屋根の出始め、上が小さい値）"""
 
 # ── Stage 2b: 寸法数値を読む ─────────────────────────────────────────
 
-def ms_stage2b_dims(face_img: bytes, face_label: str, api_key: str) -> dict:
+def ms_stage2b_dims(face_img: bytes, face_label: str, api_key: str, is_side_view: bool = False) -> dict:
     """
     Stage 2b: 立面図の寸法線に書かれた数値を読む。
+    is_side_view=True: 東/西面（側面図）→ 幅＝建物の奥行き
     返値: {"width_m": float|None, "eave_height_m": float|None, "ridge_height_m": float|None}
     """
     from openai import OpenAI
     client = OpenAI(api_key=api_key)
-    q = f"""これは{face_label}です。
-図面内の寸法線（←→ や |..| で示された数値）を読み取ってください。
+    if is_side_view:
+        q = f"""これは{face_label}（側面図）です。
+この図は建物を横から見た立面図です。
 
+図面内の寸法線の数値を読み取ってください:
+- width_m: この図の水平方向の寸法（＝建物の「奥行き」、m単位）
+  ※複数の数値が足し算で示される場合は合計値を返す（例: 5.0+3.6+0.6=7.16 → 7.16）
+- eave_height_m: 軒高（地面から軒先、m単位）
+- ridge_height_m: 棟高（地面から棟頂点、m単位）
+
+重要: この図の水平寸法は「奥行き」であり、建物の正面幅（12〜15m程度）とは異なる（通常5〜9m）。
+読み取れない項目はnull。
+
+```json
+{{"width_m": 7.16, "eave_height_m": 6.5, "ridge_height_m": 8.693}}
+```"""
+    else:
+        q = f"""これは{face_label}（正面/背面図）です。
+
+図面内の寸法線の数値を読み取ってください:
 - width_m: 建物の幅（水平の寸法、m単位）
-- eave_height_m: 軒高（地面から軒先、m単位）  
+- eave_height_m: 軒高（地面から軒先、m単位）
 - ridge_height_m: 棟高（地面から棟頂点、m単位）
 
 読み取れない項目はnull。住宅の合理的な範囲外（幅>30m、軒高>10m）はnull。
@@ -573,6 +591,35 @@ has_setback=falseなら全て0〜1のデフォルト値でよい。
 
 
 # ── Stage 3a/3c: 各階の窓数カウント ──────────────────────────────────
+
+def ms_stage2d_depth_setback(side_img: bytes, face_label: str, api_key: str) -> dict:
+    """
+    Stage 2d-depth: 東/西面（側面図）から奥行き方向のセットバックを検出する。
+    2Fが1Fより手前（南方向）に引っ込んでいるかを調べる。
+    返値: {
+      "has_depth_setback": bool,
+      "f2_depth_ratio": float  # 1Fの奥行きを1.0としたときの2Fの奥行き割合
+    }
+    """
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
+    q = f"""これは{face_label}（側面図）です。
+
+この図を見て、1階と2階の「奥行き（前後方向のサイズ）」を比べてください。
+
+2階は1階より前後方向が短く（浅く）見えますか？
+例えば: 1階が手前まで張り出していて、2階はその上の奥の部分だけにある形。
+
+```json
+{{"has_depth_setback": true, "f2_depth_ratio": 0.72}}
+```
+
+- has_depth_setback: 1Fより2Fの奥行きが小さい場合はtrue
+- f2_depth_ratio: 1Fの奥行きを1.0とした場合の2Fの奥行き割合（0.5〜1.0）
+- has_depth_setback=falseなら f2_depth_ratio=1.0 を返す"""
+    result, _ = _gpt_json(client, q, side_img, max_tokens=100)
+    return result
+
 
 def ms_stage3_count_openings(face_img: bytes, face_label: str, floor_num: int, api_key: str) -> dict:
     """
@@ -699,21 +746,46 @@ def ms_stage5_assemble(
         stories  = []
 
     # セットバック → floor_footprints
+    # ①幅方向セットバック（南面から）
     s_sb = face_setbacks.get("south") or {}
+    # ②奥行き方向セットバック（東/西面から）
+    side_dsb = face_setbacks.get("east_depth") or face_setbacks.get("west_depth") or {}
+
     floor_footprints = []
-    if s_sb.get("has_setback") and floor2_h > 0:
-        f1l = float(s_sb.get("f1_left_ratio",  0.0))
-        f1r = float(s_sb.get("f1_right_ratio", 1.0))
-        f2l = float(s_sb.get("f2_left_ratio",  0.05))
-        f2r = float(s_sb.get("f2_right_ratio", 0.95))
-        f1w = total_width * (f1r - f1l)
-        f2w = total_width * (f2r - f2l)
-        x_off = total_width * (f2l - f1l)
+    has_width_sb  = s_sb.get("has_setback", False) and floor2_h > 0
+    has_depth_sb  = side_dsb.get("has_depth_setback", False) and floor2_h > 0
+
+    if has_width_sb or has_depth_sb:
+        # 幅方向
+        if has_width_sb:
+            f1l = float(s_sb.get("f1_left_ratio",  0.0))
+            f1r = float(s_sb.get("f1_right_ratio", 1.0))
+            f2l = float(s_sb.get("f2_left_ratio",  0.05))
+            f2r = float(s_sb.get("f2_right_ratio", 0.95))
+            f1w = round(total_width * (f1r - f1l), 2)
+            f2w = round(total_width * (f2r - f2l), 2)
+            x_off = round(total_width * (f2l - f1l), 2)
+        else:
+            f1w = total_width
+            f2w = total_width
+            x_off = 0.0
+        # 奥行き方向
+        if has_depth_sb:
+            f2dr = float(side_dsb.get("f2_depth_ratio", 0.72))
+            f2dr = max(0.3, min(1.0, f2dr))  # 0.3〜1.0 にクランプ
+            f1d = total_depth
+            f2d = round(total_depth * f2dr, 2)
+            # 2Fは奥（北側）に揃える → z_offset = 1F奥行 - 2F奥行
+            z_off = round(f1d - f2d, 2)
+        else:
+            f1d = total_depth
+            f2d = total_depth
+            z_off = 0.0
         floor_footprints = [
-            {"floor": 1, "width": round(f1w, 2), "depth": total_depth,
+            {"floor": 1, "width": f1w, "depth": f1d,
              "x_offset": 0.0, "z_offset": 0.0, "floor_height": floor1_h},
-            {"floor": 2, "width": round(f2w, 2), "depth": total_depth,
-             "x_offset": round(x_off, 2), "z_offset": 0.0, "floor_height": floor2_h},
+            {"floor": 2, "width": f2w, "depth": f2d,
+             "x_offset": x_off, "z_offset": z_off, "floor_height": floor2_h},
         ]
 
     # openings（pixel ratio → メートル変換）

@@ -1675,6 +1675,7 @@ elif st.session_state.step == 2:
                                             from core.trace_analyzer import (
                                                 ms_stage1_layout, ms_stage2a_bounds, ms_stage2b_dims,
                                                 ms_stage2c_floor_line, ms_stage2d_setback,
+                                                ms_stage2d_depth_setback,
                                                 ms_stage3_count_openings, ms_stage3_opening_positions,
                                                 ms_stage4_roof_type, ms_stage5_assemble, _crop_r,
                                             )
@@ -1720,7 +1721,8 @@ elif st.session_state.step == 2:
                                                 # Stage 2b: 寸法数値読取
                                                 with st.spinner(f"Stage 2b [{_fl}]: 寸法数値を読み取り中…"):
                                                     try:
-                                                        _msv2_dims[_msv2_fk] = ms_stage2b_dims(_fc, _fl, _msv2_key)
+                                                        _is_side = _msv2_fk in ("east", "west")
+                                                        _msv2_dims[_msv2_fk] = ms_stage2b_dims(_fc, _fl, _msv2_key, is_side_view=_is_side)
                                                         _d = _msv2_dims[_msv2_fk]
                                                         st.success(f"  {_fl}: 幅={_d.get('width_m')}m / 軒高={_d.get('eave_height_m')}m / 棟高={_d.get('ridge_height_m')}m")
                                                     except Exception as _e:
@@ -1752,6 +1754,20 @@ elif st.session_state.step == 2:
                                                     except Exception as _e:
                                                         st.warning(f"  {_fl} 2d失敗: {_e}")
                                                         _msv2_setbacks[_msv2_fk] = {}
+
+                                                # Stage 2d-depth: 奥行きセットバック（東/西面のみ）
+                                                if _msv2_fk in ("east", "west"):
+                                                    with st.spinner(f"Stage 2d-depth [{_fl}]: 奥行き方向セットバックを検出中…"):
+                                                        try:
+                                                            _msv2_dsb = ms_stage2d_depth_setback(_fc, _fl, _msv2_key)
+                                                            _depth_key = f"{_msv2_fk}_depth"
+                                                            _msv2_setbacks[_depth_key] = _msv2_dsb
+                                                            if _msv2_dsb.get("has_depth_setback"):
+                                                                st.success(f"  {_fl}: 奥行きセットバックあり / 2F奥行き={_msv2_dsb.get('f2_depth_ratio'):.2f}×1F")
+                                                            else:
+                                                                st.success(f"  {_fl}: 奥行きセットバックなし")
+                                                        except Exception as _e:
+                                                            st.warning(f"  {_fl} 2d-depth失敗: {_e}")
 
                                                 # Stage 3: 各階ごとに窓・ドア検出
                                                 _msv2_openings[_msv2_fk] = {}
@@ -1819,18 +1835,33 @@ elif st.session_state.step == 2:
                                                     face_openings_raw = _msv2_openings,
                                                     roof_type     = _msv2_roof,
                                                 )
-                                                # DrawingAnalyzerの寸法のみ補正（openings/footprintsは上書きしない）
+                                                # DrawingAnalyzerの寸法を補正（openings/footprintsは多段階優先）
                                                 _msv2_ann = st.session_state.get("drawing_annotations") or []
+                                                _msv2_dd  = st.session_state.get("drawing_data") or {}
                                                 if _msv2_ann:
                                                     from core.building_3d_generator import build_3d_from_annotations
-                                                    _msv2_ann_data = build_3d_from_annotations(_msv2_ann)
+                                                    _msv2_ann_fps = (st.session_state.get("floor_plan_data") or {}).get("floor_footprints") or []
+                                                    _msv2_dd_fps  = _msv2_dd.get("floor_footprints") or []
+                                                    _msv2_ann_data = build_3d_from_annotations(_msv2_ann, floor_footprints=_msv2_ann_fps or _msv2_dd_fps)
                                                     if "error" not in _msv2_ann_data:
-                                                        # 寸法のみ補正（footprints・openingsは多段階の結果を優先）
                                                         _msv2_bldg["dimensions"].update(_msv2_ann_data["dimensions"])
                                                         _msv2_bldg["roof"]["eave_height"]  = _msv2_ann_data["dimensions"]["eave_height"]
                                                         _msv2_bldg["roof"]["ridge_height"] = _msv2_ann_data["dimensions"]["ridge_height"]
-                                                        if not _msv2_bldg["floor_footprints"] and _msv2_ann_data.get("floor_footprints"):
-                                                            _msv2_bldg["floor_footprints"] = _msv2_ann_data["floor_footprints"]
+                                                        # ★奥行きをDrawingAnalyzerから優先使用（GPT誤読対策）
+                                                        _da_depth = _msv2_ann_data["dimensions"].get("total_depth")
+                                                        if _da_depth and _da_depth > 0:
+                                                            _msv2_bldg["dimensions"]["total_depth"] = _da_depth
+                                                            # floor_footprintsの奥行きも更新
+                                                            for _fp in (_msv2_bldg.get("floor_footprints") or []):
+                                                                if _fp.get("floor") == 1:
+                                                                    _fp["depth"] = _da_depth
+                                                                elif _fp.get("floor") == 2 and _fp.get("depth"):
+                                                                    # 2Fは比率を維持
+                                                                    _ratio = _fp["depth"] / _msv2_bldg["dimensions"].get("total_depth", _da_depth)
+                                                                    _fp["depth"] = round(_da_depth * _ratio, 2)
+                                                        # floor_footprints: 多段階で検出した場合は維持、なければAnnotationsから
+                                                        if not _msv2_bldg["floor_footprints"]:
+                                                            _msv2_bldg["floor_footprints"] = _msv2_ann_data.get("floor_footprints") or []
                                                         _msv2_bldg["note"] += " ／ 寸法補正済"
                                                         _msv2_bldg["_pipeline"] = "multistage_v2+annotations"
                                                 st.session_state["building_3d_data"] = _msv2_bldg
