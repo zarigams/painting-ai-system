@@ -86,13 +86,6 @@ DRAWING_SYSTEM_PROMPT_ANNOTATED = """
 - 各立面図の枠内だけを個別に読む（他の面の線と混同しない）
 - それぞれの幅・高さ・開口部を面ごとに独立して計測する
 
-## 1F/2Fのセットバック（形状差）の検出
-2階建て建物では1Fと2Fの外壁位置が異なる場合がある（1Fが広く2Fが狭い）。
-立面図で以下のパターンを確認する：
-- 建物外形の水平方向に段差があれば → 1F幅と2F幅が異なる
-- 1F外壁幅（地面から1F天井高まで）と2F外壁幅（1F天井高から軒高まで）を各面ごとに記録する
-- faces の各面に floor_widths を追加: {"floor_1": 10.5, "floor_2": 8.0}（差がなければ省略）
-
 ## annotations フォーマット
 各寸法について以下を返す：
 - label: 項目名（"南面幅", "東面幅", "棟高さ", "軒高（2F）", "1F天井高", "縮尺" など）
@@ -131,11 +124,10 @@ DRAWING_SYSTEM_PROMPT_ANNOTATED = """
     "south": {
       "width": 9.1,
       "height": 6.5,
-      "floor_widths": {"floor_1": 9.1, "floor_2": 7.5},
       "openings": [
-        {"type": "窓", "width": 1.6, "height": 1.2, "x_from_left": 1.0, "z_from_floor": 0.9},
-        {"type": "窓", "width": 1.6, "height": 1.2, "x_from_left": 3.5, "z_from_floor": 0.9},
-        {"type": "ドア", "width": 0.9, "height": 2.1, "x_from_left": 6.5, "z_from_floor": 0.0}
+        {"type": "窓", "width": 1.6, "height": 1.2, "x_from_left": 1.0, "z_from_ground": 0.9},
+        {"type": "窓", "width": 1.6, "height": 1.2, "x_from_left": 3.5, "z_from_ground": 4.6},
+        {"type": "ドア", "width": 0.9, "height": 2.1, "x_from_left": 6.5, "z_from_ground": 0.0}
       ],
       "wall_area": 47.5
     },
@@ -143,7 +135,7 @@ DRAWING_SYSTEM_PROMPT_ANNOTATED = """
       "width": 9.1,
       "height": 6.5,
       "openings": [
-        {"type": "窓", "width": 1.6, "height": 1.2, "x_from_left": 2.0, "z_from_floor": 0.9}
+        {"type": "窓", "width": 1.6, "height": 1.2, "x_from_left": 2.0, "z_from_ground": 0.9}
       ],
       "wall_area": 57.3
     },
@@ -151,7 +143,7 @@ DRAWING_SYSTEM_PROMPT_ANNOTATED = """
       "width": 7.2,
       "height": 6.5,
       "openings": [
-        {"type": "窓", "width": 0.9, "height": 1.2, "x_from_left": 1.5, "z_from_floor": 0.9}
+        {"type": "窓", "width": 0.9, "height": 1.2, "x_from_left": 1.5, "z_from_ground": 0.9}
       ],
       "wall_area": 45.7
     },
@@ -175,8 +167,7 @@ DRAWING_SYSTEM_PROMPT_ANNOTATED = """
 
 - faces: 各面の幅・軒高・開口部リスト・wall_area（開口控除済み面積）を返す
 - openings の x_from_left: その面の左端から開口部中心までの距離(m)（3D窓位置に使用）
-- openings の z_from_floor: 床面から開口部下端までの高さ(m)（腰窓=0.9、掃出し窓=0、ドア=0）
-- floor_widths: 1Fと2Fで幅が異なる場合のみ記載（3Dのセットバック表示に使用）
+- openings の z_from_ground: 地面（GL）から開口部下端までの絶対高さ(m)。1F腰窓=0.9、1F掃出し/ドア=0。2F窓の場合は「1F天井高 + 局部高さ」で計算すること（例: 1F天井高3.665mなら2F腰窓=4.565、2F掃出し=3.665）
 - total_wall_area: 4面のwall_area合計（開口控除済み）を返す
 - exterior_wall_area は null のまま（別モジュールで幾何学計算するため）
 - faces/total_wall_area が取得できない場合はキーごと省略してよい

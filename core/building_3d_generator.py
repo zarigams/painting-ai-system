@@ -202,8 +202,10 @@ def _faces_to_openings(faces: dict, bw: float, bd: float, eave_h: float) -> list
             ow = float(op.get("width") or 1.0)
             oh = float(op.get("height") or 1.2)
             op_type = op.get("type", "窓")
-            # z_from_floor: 立面図/平面図で取得した正確な値を優先、なければ推定
-            if op.get("z_from_floor") is not None:
+            # z_from_ground（絶対高さ優先）> z_from_floor（レガシー）> 推定値
+            if op.get("z_from_ground") is not None:
+                oz = round(float(op["z_from_ground"]), 2)
+            elif op.get("z_from_floor") is not None:
                 oz = round(float(op["z_from_floor"]), 2)
             elif op_type == "ドア" or op_type == "玄関":
                 oz = 0.1
@@ -273,23 +275,7 @@ def build_3d_from_annotations(annotations: list, roof_type: str = "寄棟", face
         note_parts.append(f"{a.get('label','')}={a.get('value','')}{a.get('unit','m')}")
     note = "DrawingAnalyzer抽出値: " + " / ".join(note_parts[:6])
 
-    # faces の floor_widths から floor_footprints を自動生成（立面図プロンプト改善で取得可能）
-    if not floor_footprints and faces:
-        _fw_s = (faces.get("south") or {}).get("floor_widths") or {}
-        _fw_e = (faces.get("east")  or {}).get("floor_widths") or {}
-        _f1w = float(_fw_s.get("floor_1") or total_width)
-        _f2w = float(_fw_s.get("floor_2") or 0)
-        _f1d = float(_fw_e.get("floor_1") or total_depth)
-        _f2d = float(_fw_e.get("floor_2") or 0)
-        if _f2w > 0 and abs(_f1w - _f2w) > 0.3:
-            _f1h = floor1_h
-            _f2h = max(round(eave_height - _f1h, 1), 2.0)
-            _x_off = round((_f1w - _f2w) / 2.0, 2)
-            _z_off = round((_f1d - _f2d) / 2.0, 2) if _f2d > 0 and abs(_f1d - _f2d) > 0.3 else 0.0
-            floor_footprints = [
-                {"floor": 1, "width": _f1w, "depth": _f1d if _f1d > 0 else None, "x_offset": 0.0, "z_offset": 0.0, "floor_height": round(_f1h, 1)},
-                {"floor": 2, "width": _f2w, "depth": _f2d if _f2d > 0 else None, "x_offset": _x_off, "z_offset": _z_off, "floor_height": _f2h},
-            ]
+
 
     return {
         "building_type": "立面図",
@@ -450,6 +436,17 @@ if(footprints.length>=2){
   // シングルフットプリント（従来通り）
   drawFloorBox(OX,OZ,BW,BD,EH,0,'');
   addBox(OX,-0.3,OZ,BW,0.3,BD,'#888888','基礎',BW+'m × '+BD+'m');
+  // 2階建て単一ボックス: stories から1F/2F境界帯を追加
+  const _stories=BUILDING.stories||[];
+  if(_stories.length>0){
+    let _cumH=0;
+    _stories.forEach(_s=>{
+      _cumH+=_s.floor_height||3.0;
+      if(_cumH<EH-0.3){
+        addBox(OX-0.05,_cumH,OZ-0.05,BW+0.1,0.08,BD+0.1,'#9a8870','階境帯','高さ'+_cumH.toFixed(2)+'m');
+      }
+    });
+  }
 }else{
   walls.forEach(w=>{
     addBox(OX+(w.x||0),w.z||0,OZ+(w.y||0),w.width||BW,w.height||EH,w.depth||0.2,
@@ -462,8 +459,8 @@ if(footprints.length>=2){
   const lastFP=footprints[footprints.length-1];
   roofBW=Math.min(Math.max(lastFP.width||BW,2),40);
   roofBD=Math.min(Math.max(lastFP.depth||BD,2),40);
-  roofOX=-roofBW/2+(lastFP.x_offset||0);
-  roofOZ=-BD/2+(lastFP.z_offset||0);  // 1F南端基準
+  roofOX=OX+(lastFP.x_offset||0);
+  roofOZ=OZ+(lastFP.z_offset||0);  // 1F南端基準（OX/OZから相対オフセット）
   // 累積高さ
   roofBaseH=footprints.reduce((s,fp)=>s+Math.min(Math.max(fp.floor_height||3.0,2),5),0);
 }
