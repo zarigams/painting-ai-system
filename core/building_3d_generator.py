@@ -151,7 +151,7 @@ def analyze_drawing_3d(img_bytes: bytes, api_key: str) -> dict:
                     {"label": "東壁", "x": 10, "y": 0, "z": 0, "width": 0.2, "height": 5.5, "depth": 8},
                 ],
                 "roof": {"type": "寄棟", "eave_height": 5.5, "ridge_height": 8.0},
-                "openings": [],
+                "openings": _faces_to_openings(faces or {}, total_width, total_depth, eave_height),
                 "floors": [{"label": "基礎", "x": 0, "y": 0, "z": -0.3, "width": 10, "depth": 8, "height": 0.3}],
                 "_raw_gpt_response": _raw_for_log,
                 "_pipeline": "direct_fallback",
@@ -175,7 +175,48 @@ def analyze_drawing_3d(img_bytes: bytes, api_key: str) -> dict:
 
 
 
-def build_3d_from_annotations(annotations: list, roof_type: str = "寄棟") -> dict:
+
+def _faces_to_openings(faces: dict, bw: float, bd: float, eave_h: float) -> list:
+    """
+    GPTが返した faces dict (南/北/東/西) から 3D用 openings リストを生成する。
+    各面の窓・ドアを均等分布で配置。位置は近似（図面から正確な座標は取得しない）。
+    """
+    openings = []
+    face_cfgs = {
+        "south": {"wall": "south", "span": bw},
+        "north": {"wall": "north", "span": bw},
+        "east":  {"wall": "east",  "span": bd},
+        "west":  {"wall": "west",  "span": bd},
+    }
+    for face_name, cfg in face_cfgs.items():
+        face_data = faces.get(face_name)
+        if not face_data or not isinstance(face_data, dict):
+            continue
+        ops = face_data.get("openings") or []
+        if not ops:
+            continue
+        span = cfg["span"]
+        n = len(ops)
+        spacing = span / (n + 1)
+        for i, op in enumerate(ops):
+            ow = float(op.get("width") or 1.0)
+            oh = float(op.get("height") or 1.2)
+            op_type = op.get("type", "窓")
+            # 高さ: ドアは地面から、窓は軒高の約40%
+            oz = 0.1 if op_type == "ドア" else round(eave_h * 0.40, 2)
+            pos = round(spacing * (i + 1) - ow / 2, 2)
+            openings.append({
+                "face":   face_name,
+                "x":      pos,          # 面の左端からのオフセット
+                "z":      oz,           # 地面からの高さ
+                "width":  round(ow, 2),
+                "height": round(oh, 2),
+                "type":   op_type,
+            })
+    return openings
+
+
+def build_3d_from_annotations(annotations: list, roof_type: str = "寄棟", faces: dict = None) -> dict:
     """
     DrawingAnalyzerが抽出したannotationsから建物3Dデータを構築する。
     GPTへの追加APIコール不要。STEP2の正確な抽出値を使用。
@@ -422,25 +463,58 @@ if(rtype==='陸屋根'){
   addBox(OX-OH-0.05,rEH-0.32,OZ-OH,0.05,0.28,BD+OH*2,'#7a6345','鼻隠し（西）','');
   addBox(OX+BW+OH,rEH-0.32,OZ-OH,0.05,0.28,BD+OH*2,'#7a6345','鼻隠し（東）','');
 }
-// 開口部（窓枠+ガラス）
+// 開口部（窓枠+ガラス）各面対応
 const openings=BUILDING.openings||[];
-const FW=0.07;
+const FW=0.07,GT=0.12;  // FW=枠幅, GT=ガラス厚
+const glassMat=new THREE.MeshBasicMaterial({color:0x88ccff,transparent:true,opacity:0.38,side:THREE.DoubleSide});
+function addGlassBox(x,y,z,w,h,d,label,dim){
+  const geo=new THREE.BoxGeometry(w,h,d);
+  const m=new THREE.Mesh(geo,glassMat);
+  m.position.set(x+w/2,y+h/2,z+d/2);
+  m.userData={label:label||'窓',dimText:dim||''};
+  scene.add(m);clickable.push(m);}
 openings.forEach(op=>{
-  const ox=OX+(op.x||0),oy=OZ+(op.y||0),oz_=op.z||0;
+  const face=op.face||'south';
   const ow=Math.max(op.width||1,0.3),oh_=Math.max(op.height||1.2,0.3);
+  const oz_=op.z||1.5;
   const fc=op.type==='窓'?'#b0b8c8':op.type==='ドア'?'#8b7355':'#6a9a7a';
-  // ガラス（半透明）
-  const gm=new THREE.MeshBasicMaterial({color:0x88ccff,transparent:true,opacity:0.35,side:THREE.DoubleSide});
-  const gg=new THREE.PlaneGeometry(ow,oh_);
-  const gls=new THREE.Mesh(gg,gm);
-  gls.position.set(ox+ow/2,oz_+oh_/2,oy+0.01);
-  gls.userData={label:op.type||'開口部',dimText:'幅'+ow.toFixed(1)+'m × 高'+oh_.toFixed(1)+'m'};
-  scene.add(gls);clickable.push(gls);
-  // 窓枠4辺
-  addBox(ox-FW,oz_-FW,oy-0.05,ow+FW*2,FW,0.07,fc,'','');
-  addBox(ox-FW,oz_+oh_,oy-0.05,ow+FW*2,FW,0.07,fc,'','');
-  addBox(ox-FW,oz_,oy-0.05,FW,oh_,0.07,fc,'','');
-  addBox(ox+ow,oz_,oy-0.05,FW,oh_,0.07,fc,'','');
+  const dimT='幅'+ow.toFixed(1)+'m × 高'+oh_.toFixed(1)+'m';
+  const pos=op.x||0;  // 面の左端からのオフセット
+  if(face==='south'){
+    // 南壁: z=OZ, X方向にpx展開
+    const px=OX+pos;
+    addGlassBox(px,oz_,OZ-GT/2,ow,oh_,GT,op.type,dimT);
+    addBox(px-FW,oz_-FW,OZ-0.08,ow+FW*2,FW,0.07,fc,'','');
+    addBox(px-FW,oz_+oh_,OZ-0.08,ow+FW*2,FW,0.07,fc,'','');
+    addBox(px-FW,oz_,OZ-0.08,FW,oh_,0.07,fc,'','');
+    addBox(px+ow,oz_,OZ-0.08,FW,oh_,0.07,fc,'','');
+  }else if(face==='north'){
+    const px=OX+pos;
+    addGlassBox(px,oz_,OZ+BD-GT/2,ow,oh_,GT,op.type,dimT);
+    addBox(px-FW,oz_-FW,OZ+BD+0.01,ow+FW*2,FW,0.07,fc,'','');
+    addBox(px-FW,oz_+oh_,OZ+BD+0.01,ow+FW*2,FW,0.07,fc,'','');
+    addBox(px-FW,oz_,OZ+BD+0.01,FW,oh_,0.07,fc,'','');
+    addBox(px+ow,oz_,OZ+BD+0.01,FW,oh_,0.07,fc,'','');
+  }else if(face==='east'){
+    // 東壁: x=OX+BW, Z方向にpos展開（widthがZ方向）
+    const pz=OZ+pos;
+    addGlassBox(OX+BW-GT/2,oz_,pz,GT,oh_,ow,op.type,dimT);
+    addBox(OX+BW+0.01,oz_-FW,pz-FW,0.07,FW,ow+FW*2,fc,'','');
+    addBox(OX+BW+0.01,oz_+oh_,pz-FW,0.07,FW,ow+FW*2,fc,'','');
+    addBox(OX+BW+0.01,oz_,pz-FW,0.07,oh_,FW,fc,'','');
+    addBox(OX+BW+0.01,oz_,pz+ow,0.07,oh_,FW,fc,'','');
+  }else if(face==='west'){
+    const pz=OZ+pos;
+    addGlassBox(OX-GT/2,oz_,pz,GT,oh_,ow,op.type,dimT);
+    addBox(OX-0.08,oz_-FW,pz-FW,0.07,FW,ow+FW*2,fc,'','');
+    addBox(OX-0.08,oz_+oh_,pz-FW,0.07,FW,ow+FW*2,fc,'','');
+    addBox(OX-0.08,oz_,pz-FW,0.07,oh_,FW,fc,'','');
+    addBox(OX-0.08,oz_,pz+ow,0.07,oh_,FW,fc,'','');
+  }else{
+    // フォールバック: 南壁扱い
+    const px=OX+(op.x||0);
+    addGlassBox(px,oz_,OZ-GT/2,ow,oh_,GT,op.type,dimT);
+  }
 });
 document.getElementById('tbadge').textContent=BUILDING.building_type||'';
 document.getElementById('note').textContent=BUILDING.note||'';
