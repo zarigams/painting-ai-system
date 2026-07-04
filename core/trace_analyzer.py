@@ -407,11 +407,21 @@ def _gpt_json(client, user_text: str, img_bytes: bytes, max_tokens: int = 300) -
         temperature=0.05,
     )
     raw = resp.choices[0].message.content.strip()
-    # コードブロック除去
+    # ① コードブロック除去
     if "```" in raw:
         parts = raw.split("```")
         raw = parts[1] if len(parts) > 1 else raw
         if raw.startswith("json"): raw = raw[4:]
+        raw = raw.strip()
+    # ② コードブロックがなくても { or [ の位置からJSONを抽出（フォールバック）
+    if not raw.startswith(("{", "[")):
+        for start_ch, end_ch in [('{', '}'), ('[', ']')]:
+            si = raw.find(start_ch)
+            if si != -1:
+                ei = raw.rfind(end_ch)
+                if ei > si:
+                    raw = raw[si:ei+1]
+                    break
     return json.loads(raw.strip()), resp.usage
 
 
@@ -445,9 +455,12 @@ def ms_stage1_layout(img_bytes: bytes, api_key: str) -> dict:
     q = """この建築図面に 南立面図・北立面図・東立面図・西立面図 が配置されています。
 各立面図のラベル文字（「南立面図」「北立面図」等）を読んで、
 それぞれの領域を画像全体に対する割合（0.0〜1.0）で返してください。
+見つからない面はnullを返す。
 
-{"south":{"x1":0.0,"y1":0.0,"x2":0.5,"y2":0.5},"north":{"x1":0.5,"y1":0.0,"x2":1.0,"y2":0.5},"east":{"x1":0.0,"y1":0.5,"x2":0.5,"y2":1.0},"west":{"x1":0.5,"y1":0.5,"x2":1.0,"y2":1.0}}"""
-    result, _ = _gpt_json(client, q, img_bytes, max_tokens=200)
+```json
+{"south":{"x1":0.0,"y1":0.0,"x2":0.5,"y2":0.5},"north":{"x1":0.5,"y1":0.0,"x2":1.0,"y2":0.5},"east":{"x1":0.0,"y1":0.5,"x2":0.5,"y2":1.0},"west":{"x1":0.5,"y1":0.5,"x2":1.0,"y2":1.0}}
+```"""
+    result, _ = _gpt_json(client, q, img_bytes, max_tokens=400)
     return result
 
 
@@ -467,13 +480,15 @@ def ms_stage2a_bounds(face_img: bytes, face_label: str, api_key: str) -> dict:
 寸法線・タイトル文字・図面外枠は含めないこと。
 
 返却フォーマット:
+```json
 {{"left": 0.08, "right": 0.92, "ground": 0.78, "eave": 0.18}}
+```
 
 left: 建物左端（画像幅に対する割合）
 right: 建物右端
 ground: 地面ライン（画像高さに対する割合、下が大きい値）
 eave: 軒先ライン（屋根の出始め、上が小さい値）"""
-    result, _ = _gpt_json(client, q, face_img, max_tokens=100)
+    result, _ = _gpt_json(client, q, face_img, max_tokens=150)
     return result
 
 
@@ -495,8 +510,10 @@ def ms_stage2b_dims(face_img: bytes, face_label: str, api_key: str) -> dict:
 
 読み取れない項目はnull。住宅の合理的な範囲外（幅>30m、軒高>10m）はnull。
 
-{{"width_m": 12.9, "eave_height_m": 6.5, "ridge_height_m": 8.693}}"""
-    result, _ = _gpt_json(client, q, face_img, max_tokens=100)
+```json
+{{"width_m": 12.9, "eave_height_m": 6.5, "ridge_height_m": 8.693}}
+```"""
+    result, _ = _gpt_json(client, q, face_img, max_tokens=150)
     return result
 
 
@@ -515,11 +532,13 @@ def ms_stage2c_floor_line(face_img: bytes, face_label: str, api_key: str) -> dic
     q = f"""これは{face_label}です。
 建物が2階建ての場合、1F天井と2F床の境界を示す水平線はありますか？
 
+```json
 {{"has_second_floor": true, "floor2_start_y_ratio": 0.55}}
+```
 
 floor2_start_y_ratio は画像上端=0, 下端=1 の割合で境界線の位置を示します。
-平屋・1階建てなら {{"has_second_floor": false, "floor2_start_y_ratio": null}}"""
-    result, _ = _gpt_json(client, q, face_img, max_tokens=80)
+平屋・1階建てなら `{{"has_second_floor": false, "floor2_start_y_ratio": null}}`"""
+    result, _ = _gpt_json(client, q, face_img, max_tokens=100)
     return result
 
 
@@ -543,11 +562,13 @@ def ms_stage2d_setback(face_img: bytes, face_label: str, api_key: str) -> dict:
 
 例: 1階が幅いっぱいで、2階が少し内側に収まっている → セットバックあり
 
+```json
 {{"has_setback": true, "f1_left_ratio": 0.0, "f1_right_ratio": 1.0, "f2_left_ratio": 0.05, "f2_right_ratio": 0.90}}
+```
 
 has_setback=falseなら全て0〜1のデフォルト値でよい。
 値は建物外形内での相対割合（建物左端=0、右端=1）で表す。"""
-    result, _ = _gpt_json(client, q, face_img, max_tokens=120)
+    result, _ = _gpt_json(client, q, face_img, max_tokens=150)
     return result
 
 
@@ -564,11 +585,13 @@ def ms_stage3_count_openings(face_img: bytes, face_label: str, floor_num: int, a
     q = f"""これは{face_label}です。
 {floor_num}階部分に見える「窓」と「ドア・玄関」をそれぞれ数えてください。
 
+```json
 {{"window_count": 3, "door_count": 1}}
+```
 
 窓: 壁に開いた矩形の開口（格子・ガラス面として表現）
 ドア: 地面から続く背の高い開口"""
-    result, _ = _gpt_json(client, q, face_img, max_tokens=60)
+    result, _ = _gpt_json(client, q, face_img, max_tokens=80)
     return result
 
 
@@ -598,8 +621,10 @@ def ms_stage3_opening_positions(
 
 参考: 建物幅={width_m}m / 対象階高={floor_height_m}m
 
-[{{"x_ratio":0.15,"z_ratio":0.25,"w_ratio":0.12,"h_ratio":0.18}}]"""
-    result, _ = _gpt_json(client, q, face_img, max_tokens=300)
+```json
+[{{"x_ratio":0.15,"z_ratio":0.25,"w_ratio":0.12,"h_ratio":0.18}}]
+```"""
+    result, _ = _gpt_json(client, q, face_img, max_tokens=400)
     return result if isinstance(result, list) else []
 
 
@@ -616,9 +641,11 @@ def ms_stage4_roof_type(south_img: bytes, api_key: str) -> str:
 片流れ: 一方向だけ傾斜
 陸屋根: 平ら
 
-{"roof_type": "切妻"}"""
+```json
+{"roof_type": "切妻"}
+```"""
     try:
-        result, _ = _gpt_json(client, q, south_img, max_tokens=40)
+        result, _ = _gpt_json(client, q, south_img, max_tokens=60)
         return result.get("roof_type", "寄棟")
     except Exception:
         return "寄棟"
