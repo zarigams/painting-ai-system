@@ -1630,6 +1630,9 @@ elif st.session_state.step == 2:
                                                                     # floor_footprints: 平面図>トレース>空 の優先順
                                                                     if not _bldg_data.get("floor_footprints"):
                                                                         _bldg_data["floor_footprints"] = _ann_data.get("floor_footprints") or []
+                                                                    # openings: faces由来（face付き・全方位）で上書き。トレースのopeningsはface未設定で全部南壁になるため
+                                                                    if _ann_data.get("openings"):
+                                                                        _bldg_data["openings"] = _ann_data["openings"]
                                                             st.session_state["building_3d_data"] = _bldg_data
                                                             st.session_state["_3d_gpt_raw"] = _bldg_data.get("_raw_gpt_response", "")
                                                             _corr_badge = " [寸法補正済]" if _ann2 else ""

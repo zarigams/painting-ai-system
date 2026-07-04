@@ -309,7 +309,7 @@ def build_3d_from_annotations(annotations: list, roof_type: str = "寄棟", face
             "eave_height":  eave_height,
             "ridge_height": ridge_height,
         },
-        "openings": [],
+        "openings": _faces_to_openings(faces or {}, total_width, total_depth, eave_height),
         "floors": [
             {"label": "基礎", "x": 0, "y": 0, "z": -0.3, "width": total_width, "depth": total_depth, "height": 0.3}
         ],
