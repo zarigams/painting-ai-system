@@ -517,6 +517,7 @@ def build_3d_from_line_analysis(
     face_regions: dict = None,
     roof_type: str = None,
     annotations_dims: dict = None,
+    faces_data: dict = None,
     progress_callback=None,
 ) -> dict:
     """
@@ -528,6 +529,8 @@ def build_3d_from_line_analysis(
     face_regions    : {"south":(x1r,y1r,x2r,y2r),...} ユーザーが指定した場合はこれを使う
     roof_type       : 屋根タイプ文字列（指定なければGPTで判定）
     annotations_dims: DrawingAnalyzerの寸法dict（あれば最優先）
+    faces_data      : DrawingAnalyzerのfaces dict（あればGPT窓検出をスキップ）
+                      例: {"south": {"openings": [{"x_from_left":1.0,"z_from_ground":0.9,"width":1.6,"height":1.2}]}}
     progress_callback: fn(stage_name, message) → UIへの進捗通知
 
     Returns: building 3D dict (building_3d_generator.py と互換)
@@ -567,7 +570,7 @@ def build_3d_from_line_analysis(
     m_per_px  = ld.get("scale_m_per_px", 0.001)
     _cb("B", f"線検出完了: {len(all_lines)}本 / m_per_px={m_per_px:.5f}")
 
-    # --- Stage C: 面ごとに外形抽出 + GPTで窓検出 ---
+    # --- Stage C: 面ごとに外形抽出 + 窓検出（DrawingAnalyzerデータ優先、なければGPT）---
     _JP = {"south":"南","north":"北","east":"東","west":"西"}
     face_geometries = {}
     for face, (x1r, y1r, x2r, y2r) in face_regions.items():
@@ -576,18 +579,32 @@ def build_3d_from_line_analysis(
         face_h_px = int((y2r - y1r) * img_h)
         geom = extract_face_geometry(region_lines, m_per_px, face_h_px)
         if "error" not in geom:
-            _cb("C", f"  {face}: 幅{geom['width_m']}m / 高{geom['height_m']}m → GPTで窓検出中（1回）…")
-            try:
-                face_crop = _crop_region(img_bytes, x1r, y1r, x2r, y2r)
-                wins, _dbg_raw, _dbg_total = detect_face_windows_gpt(
-                    face_crop, _JP.get(face, face),
-                    geom["width_m"], geom["height_m"], api_key
-                )
+            # DrawingAnalyzerのfacesデータがあればGPT呼び出しをスキップ
+            da_face = (faces_data or {}).get(face, {})
+            da_openings = da_face.get("openings", []) if isinstance(da_face, dict) else []
+            if da_openings:
+                wins = [
+                    {"x_m": float(o.get("x_from_left", 0)),
+                     "z_m": float(o.get("z_from_ground", o.get("z_from_floor", 0))),
+                     "w_m": float(o.get("width", 1.2)),
+                     "h_m": float(o.get("height", 1.0))}
+                    for o in da_openings
+                ]
                 geom["windows"] = wins
-                _cb("C", f"  {face}: GPT応答(先頭)={_dbg_raw[:120]}")
-                _cb("C", f"  {face}: GPT検出={_dbg_total}個→サニティOK={len(wins)}個")
-            except Exception as ex:
-                _cb("C", f"  {face}: GPT窓検出失敗({ex})→線ベース結果を維持")
+                _cb("C", f"  {face}: DrawingAnalyzerデータ使用 → 窓{len(wins)}個")
+            else:
+                _cb("C", f"  {face}: 幅{geom['width_m']}m / 高{geom['height_m']}m → GPTで窓検出中（1回）…")
+                try:
+                    face_crop = _crop_region(img_bytes, x1r, y1r, x2r, y2r)
+                    wins, _dbg_raw, _dbg_total = detect_face_windows_gpt(
+                        face_crop, _JP.get(face, face),
+                        geom["width_m"], geom["height_m"], api_key
+                    )
+                    geom["windows"] = wins
+                    _cb("C", f"  {face}: GPT応答(先頭)={_dbg_raw[:120]}")
+                    _cb("C", f"  {face}: GPT検出={_dbg_total}個→サニティOK={len(wins)}個")
+                except Exception as ex:
+                    _cb("C", f"  {face}: GPT窓検出失敗({ex})→線ベース結果を維持")
         else:
             _cb("C", f"  {face}: {geom['error']}")
         face_geometries[face] = geom

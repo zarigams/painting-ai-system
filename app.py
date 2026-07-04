@@ -1923,6 +1923,11 @@ elif st.session_state.step == 2:
                                                 _m4_all_logs.append(f"{icon} Stage {stage}: {msg}")
                                                 _m4_status_area.info(f"{icon} **Stage {stage}**: {msg}")
                                                 _m4_log_area.caption(" → ".join(_m4_all_logs[-3:]))
+                                            # DrawingAnalyzerのfacesデータを取得（窓検出に使用）
+                                            _m4_faces_data = None
+                                            _dd = st.session_state.get("drawing_data") or {}
+                                            if isinstance(_dd, dict) and _dd.get("faces"):
+                                                _m4_faces_data = _dd["faces"]
                                             try:
                                                 _m4_result = build_3d_from_line_analysis(
                                                     img_bytes        = _m4_orig,
@@ -1930,6 +1935,7 @@ elif st.session_state.step == 2:
                                                     api_key          = _m4_key,
                                                     face_regions     = _m4_manual_regions,
                                                     annotations_dims = _m4_ann_dims,
+                                                    faces_data       = _m4_faces_data,
                                                     progress_callback= _m4_progress,
                                                 )
                                                 _m4_status_area.empty()
