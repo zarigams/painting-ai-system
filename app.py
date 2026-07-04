@@ -1657,6 +1657,45 @@ elif st.session_state.step == 2:
                                     _html3d = generate_building_3d_html(_bdata, canvas_height=600)
                                     import streamlit.components.v1 as _comp3d
                                     _comp3d.html(_html3d, height=620, scrolling=False)
+
+                                    # ── 3D手入力補正フォーム ────────────────────────────
+                                    with st.expander("🔧 3D寸法を手動補正（解析が合っていない場合）"):
+                                        _dim_cur = _bdata.get("dimensions") or {}
+                                        _fp_cur  = _bdata.get("floor_footprints") or []
+                                        _c1, _c2, _c3 = st.columns(3)
+                                        _fix_w   = _c1.number_input("幅 (m)",     min_value=2.0, max_value=40.0, value=float(_dim_cur.get("total_width",  10.0)), step=0.5, key="fix_bw")
+                                        _fix_d   = _c2.number_input("奥行き (m)", min_value=2.0, max_value=40.0, value=float(_dim_cur.get("total_depth",   8.0)), step=0.5, key="fix_bd")
+                                        _fix_oh  = _c3.number_input("軒の出 (m)", min_value=0.2, max_value=1.5,  value=float(_bdata.get("eave_overhang",    0.6)), step=0.1, key="fix_oh")
+                                        _c4, _c5 = st.columns(2)
+                                        _fix_eh  = _c4.number_input("軒高 (m)",   min_value=2.0, max_value=12.0, value=float(_dim_cur.get("eave_height",   5.5)), step=0.1, key="fix_eh")
+                                        _fix_rh  = _c5.number_input("棟高 (m)",   min_value=2.5, max_value=14.0, value=float(_dim_cur.get("ridge_height",  7.5)), step=0.1, key="fix_rh")
+
+                                        # 各階フットプリント補正（2階建て以上のセットバックがある場合）
+                                        _fix_fps = list(_fp_cur)  # コピー
+                                        if _fp_cur:
+                                            st.markdown("**各階フットプリント補正**")
+                                            for _fi, _fp_item in enumerate(_fp_cur):
+                                                _fca, _fcb, _fcc = st.columns(3)
+                                                _fix_fps[_fi] = dict(_fp_item)
+                                                _fix_fps[_fi]["width"]       = _fca.number_input(f"{_fi+1}F幅 (m)",   min_value=2.0, max_value=40.0, value=float(_fp_item.get("width",       10.0)), step=0.5, key=f"fix_fp_w{_fi}")
+                                                _fix_fps[_fi]["floor_height"] = _fcb.number_input(f"{_fi+1}F高 (m)",   min_value=2.0, max_value=5.5,  value=float(_fp_item.get("floor_height", 2.8)), step=0.1, key=f"fix_fp_h{_fi}")
+                                                _fix_fps[_fi]["x_offset"]    = _fcc.number_input(f"{_fi+1}F左オフセット(m)", min_value=0.0, max_value=10.0, value=float(_fp_item.get("x_offset", 0.0)), step=0.1, key=f"fix_fp_x{_fi}")
+
+                                        if st.button("✅ 3Dを更新", type="primary", key="btn_3d_fix"):
+                                            _bdata_fix = dict(st.session_state["building_3d_data"])
+                                            _bdata_fix["dimensions"] = dict(_bdata_fix.get("dimensions") or {})
+                                            _bdata_fix["dimensions"].update({
+                                                "total_width":  _fix_w,
+                                                "total_depth":  _fix_d,
+                                                "eave_height":  _fix_eh,
+                                                "ridge_height": _fix_rh,
+                                            })
+                                            _bdata_fix["eave_overhang"] = _fix_oh
+                                            if _fix_fps:
+                                                _bdata_fix["floor_footprints"] = _fix_fps
+                                            st.session_state["building_3d_data"] = _bdata_fix
+                                            st.rerun()
+
                                 else:
                                     st.info("「⚙️ 解析方法」タブで解析を実行すると3Dモデルがここに表示されます")
                     # ── クリック割り当てUI ────────────────────────
