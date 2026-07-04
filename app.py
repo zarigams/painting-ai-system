@@ -1605,7 +1605,8 @@ elif st.session_state.step == 2:
                                                             if _ann2:
                                                                 from core.building_3d_generator import build_3d_from_annotations
                                                                 _faces2 = st.session_state.get("drawing_data", {}).get("faces")
-                                                                _fp2 = (st.session_state.get("floor_plan_data") or {}).get("floor_footprints") or []
+                                                                _trace_fps2 = _bldg_data.get("floor_footprints") or []
+                                                                _fp2 = (st.session_state.get("floor_plan_data") or {}).get("floor_footprints") or _trace_fps2
                                                                 _ann_data = build_3d_from_annotations(_ann2, faces=_faces2, floor_footprints=_fp2)
                                                                 if "error" not in _ann_data:
                                                                     _dim_fix = _ann_data["dimensions"]
@@ -1626,6 +1627,9 @@ elif st.session_state.step == 2:
                                                                         _op["x"] = round(float(_op.get("x") or 0) * _scale_r, 2)
                                                                     _bldg_data["note"] = f"{_bldg_data.get('note','')} ／ 寸法補正: {_ann_data['note']}"
                                                                     _bldg_data["_pipeline"] = "trace_v2+annotations"
+                                                                    # floor_footprints: 平面図>トレース>空 の優先順
+                                                                    if not _bldg_data.get("floor_footprints"):
+                                                                        _bldg_data["floor_footprints"] = _ann_data.get("floor_footprints") or []
                                                             st.session_state["building_3d_data"] = _bldg_data
                                                             st.session_state["_3d_gpt_raw"] = _bldg_data.get("_raw_gpt_response", "")
                                                             _corr_badge = " [寸法補正済]" if _ann2 else ""

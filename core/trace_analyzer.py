@@ -214,6 +214,24 @@ _USER_TMPL = """## トレース画像の読み方
   ],
   "floors": [
     {{"label":"基礎","x":0,"y":0,"z":-0.3,"width":幅,"depth":奥行き,"height":0.3}}
+  ],
+  "floor_footprints": [
+    {{
+      "floor": 1,
+      "width": 1階の幅(m),
+      "depth": null,
+      "x_offset": 0,
+      "z_offset": 0,
+      "floor_height": 1階の高さ(m)
+    }},
+    {{
+      "floor": 2,
+      "width": 2階の幅(m)（セットバックがある場合のみ）,
+      "depth": null,
+      "x_offset": 左端からのオフセット(m),
+      "z_offset": 0,
+      "floor_height": 2階の高さ(m)
+    }}
   ]
 }}
 ```
@@ -229,6 +247,12 @@ _USER_TMPL = """## トレース画像の読み方
 - openings の z = 床面からの高さ（1階腰窓=0.9、掃出窓=0、ドア=0、2階窓=3.5）
 - floors の color フィールドは省略
 - walls は南北東西の4面を必ず記述
+- **floor_footprints**: 1階と2階で幅が異なる場合（セットバック）は必ず2要素を記述
+  - 1階幅と2階幅が同じ or 平屋 → floor_footprints は空配列 `[]` で返す
+  - セットバックあり（2階が1階より狭い）→ 両フロアを記述する
+  - x_offset: 2階が左端から何m内側に入るか。例: 1階10m、2階8m、中央揃え → x_offset=1.0
+  - floor_height: 各階の高さ（一般的住宅: 2.6〜3.2m）
+  - depth は null でよい（3Dジェネレーターが建物奥行から自動補完する）
 - JSONのみ返すこと（説明文不要）"""
 
 
