@@ -163,6 +163,60 @@ DRAWING_SYSTEM_PROMPT_ANNOTATED = """
 - faces/total_wall_area が取得できない場合はキーごと省略してよい
 """
 
+
+FLOOR_PLAN_SYSTEM_PROMPT = """
+あなたは建築平面図の読み取り専門AIです。
+平面図（間取り図）から塗装見積に必要な建物外形寸法と開口部情報を読み取り、JSONで返してください。
+
+## 読み取る情報
+1. 建物外形：total_width（幅）・total_depth（奥行き）← 外壁の外側寸法
+2. 軒高・棟高（記載あれば）
+3. 各面の開口部（窓・ドア）：幅・高さ・面の左端からのX距離
+
+## 出力形式（JSONのみ）
+{
+  "drawing_kind": "floor_plan",
+  "total_width": 9.1,
+  "total_depth": 7.2,
+  "eave_height": 6.5,
+  "ridge_height": 8.7,
+  "faces": {
+    "south": {
+      "width": 9.1,
+      "openings": [
+        {"type": "窓", "width": 1.6, "height": 1.2, "x_from_left": 1.2},
+        {"type": "窓", "width": 1.6, "height": 1.2, "x_from_left": 4.5},
+        {"type": "ドア", "width": 0.9, "height": 2.1, "x_from_left": 7.0}
+      ]
+    },
+    "north": {
+      "width": 9.1,
+      "openings": [
+        {"type": "窓", "width": 1.6, "height": 1.2, "x_from_left": 2.0}
+      ]
+    },
+    "east": {
+      "width": 7.2,
+      "openings": [
+        {"type": "窓", "width": 0.9, "height": 1.2, "x_from_left": 2.5}
+      ]
+    },
+    "west": {
+      "width": 7.2,
+      "openings": []
+    }
+  },
+  "notes": "寄棟屋根・南面バルコニーあり"
+}
+
+## 注意
+- 寸法はすべてメートル（mmで記載されている場合は÷1000）
+- x_from_left: 各面の左端（西端=南面左端、南端=東面左端）からの距離m
+- 平面図に軒高・棟高の記載がなければ null を返す
+- 開口部の z_from_floor（床からの高さ）は平面図からは読み取れないため省略
+- JSONのみ返すこと（説明文不要）
+"""
+
 # カテゴリ別の色（RGB）
 ANNOTATION_COLORS = {
     "height": (24, 95, 165),    # 青：高さ寸法
@@ -310,6 +364,55 @@ class DrawingAnalyzer:
         result = self._parse_response(raw)
         if effective_scale:
             result["_effective_scale"] = effective_scale
+        return result
+
+    def analyze_floor_plan(self, pdf_bytes: bytes) -> dict:
+        """
+        平面図PDFを解析して開口部の正確なX座標付きデータを返す。
+        戻り値: {drawing_kind, total_width, total_depth, eave_height, ridge_height, faces, notes}
+        """
+        images, _ = self.pdf_to_images(pdf_bytes)
+        if not images:
+            return {"error": "PDFのページが読み取れませんでした"}
+
+        target_images = images[:4]
+        content = [{"type": "text", "text": "この平面図（間取り図）を解析してください。"}]
+        for img_bytes in target_images:
+            b64 = base64.b64encode(img_bytes).decode("utf-8")
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"},
+            })
+
+        from core.logger import log_gpt_call, log_error
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": FLOOR_PLAN_SYSTEM_PROMPT},
+                    {"role": "user",   "content": content},
+                ],
+                max_tokens=2000,
+                temperature=0.1,
+            )
+            raw = response.choices[0].message.content
+            usage = response.usage
+            log_gpt_call(
+                func_name="DrawingAnalyzer.analyze_floor_plan",
+                model=self.model,
+                system_prompt=FLOOR_PLAN_SYSTEM_PROMPT[:200],
+                user_message_summary=f"[平面図PDF {len(target_images)}枚]",
+                response_text=raw,
+                tokens_prompt=usage.prompt_tokens if usage else None,
+                tokens_completion=usage.completion_tokens if usage else None,
+                tokens_total=usage.total_tokens if usage else None,
+            )
+        except Exception as e:
+            log_error("GPTエラー: DrawingAnalyzer.analyze_floor_plan", e, "GPT")
+            return {"error": str(e)}
+
+        result = self._parse_response(raw)
+        result["_raw_gpt_response"] = raw
         return result
 
     def analyze_with_annotations(

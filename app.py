@@ -712,6 +712,11 @@ if st.session_state.step == 1:
         else:
             drawing_scale = "不要"
             original_paper = None
+        floor_plan_file = st.file_uploader(
+            "📐 平面図PDF（間取り図・あれば窓位置を正確に取得）",
+            type=["pdf"],
+            help="立面図とは別に平面図（間取り図）があればアップロード。窓・ドアの正確な位置を取得して3D精度が向上します",
+        )
         photo_files = st.file_uploader(
             "現場写真（あれば劣化状況を解析・複数可）",
             type=["jpg", "jpeg", "png", "webp"],
@@ -788,6 +793,10 @@ if st.session_state.step == 1:
                 del st.session_state["pdf_bytes"]
                 st.session_state.pop("drawing_scale", None)
                 st.session_state.pop("original_paper", None)
+            if floor_plan_file:
+                st.session_state["floor_plan_bytes"] = floor_plan_file.getvalue()
+            elif "floor_plan_bytes" in st.session_state:
+                del st.session_state["floor_plan_bytes"]
             if photo_files:
                 st.session_state["photo_bytes_list"] = [f.getvalue() for f in photo_files]
             elif "photo_bytes_list" in st.session_state:
@@ -954,6 +963,41 @@ elif st.session_state.step == 2:
                         except Exception:
                             st.session_state.drawing_page1_raw = annotated_img
                         quantities = _merge_drawing(quantities, drawing_data, annotations)
+
+                    if "floor_plan_bytes" in st.session_state:
+                        try:
+                            from core.drawing_analyzer import DrawingAnalyzer
+                            _fp_da = DrawingAnalyzer(llm.api_key)
+                            _fp_data = _fp_da.analyze_floor_plan(
+                                st.session_state["floor_plan_bytes"]
+                            )
+                            if "error" not in _fp_data:
+                                st.session_state["floor_plan_data"] = _fp_data
+                                # 平面図のfacesで窓x座標を上書き（より正確）
+                                _fp_faces = _fp_data.get("faces") or {}
+                                if _fp_faces:
+                                    # drawing_dataのfacesをマージ（x_from_left付き）
+                                    _existing_dd = st.session_state.get("drawing_data") or {}
+                                    _existing_faces = _existing_dd.get("faces") or {}
+                                    for _fn, _fdata in _fp_faces.items():
+                                        if _fn in _existing_faces:
+                                            _existing_faces[_fn]["openings"] = _fdata.get("openings", [])
+                                            _existing_faces[_fn]["x_from_left_available"] = True
+                                        else:
+                                            _existing_faces[_fn] = _fdata
+                                    if _existing_dd:
+                                        _existing_dd["faces"] = _existing_faces
+                                        st.session_state["drawing_data"] = _existing_dd
+                                # 建物外形寸法を平面図から補完
+                                _fp_w = _fp_data.get("total_width")
+                                _fp_d = _fp_data.get("total_depth")
+                                if _fp_w and not quantities.get("wall_area"):
+                                    quantities["scaffold_area"] = round(float(_fp_w) * 1.1, 1)
+                                st.info(f"📐 平面図解析完了: 幅{_fp_data.get('total_width','?')}m × 奥行{_fp_data.get('total_depth','?')}m")
+                            else:
+                                st.warning(f"平面図解析エラー: {_fp_data.get('error')}")
+                        except Exception as _fp_e:
+                            st.warning(f"平面図解析スキップ: {_fp_e}")
 
                     if has_photos:
                         from modules.image_analyzer import ImageAnalyzer

@@ -204,7 +204,11 @@ def _faces_to_openings(faces: dict, bw: float, bd: float, eave_h: float) -> list
             op_type = op.get("type", "窓")
             # 高さ: ドアは地面から、窓は軒高の約40%
             oz = 0.1 if op_type == "ドア" else round(eave_h * 0.40, 2)
-            pos = round(spacing * (i + 1) - ow / 2, 2)
+            # 平面図から正確なx_from_leftがあればそれを優先、なければ均等分布
+            if op.get("x_from_left") is not None:
+                pos = round(float(op["x_from_left"]), 2)
+            else:
+                pos = round(spacing * (i + 1) - ow / 2, 2)
             openings.append({
                 "face":   face_name,
                 "x":      pos,          # 面の左端からのオフセット
