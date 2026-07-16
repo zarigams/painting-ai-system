@@ -122,13 +122,22 @@ def fill_standard_template(
     if discount:
         ws_quote["G18"] = discount if discount <= 0 else -abs(discount)
 
+    # 見積書シート B5 サンプル値クリア（テンプレートに「吉田」が残存するため）
+    ws_quote["B5"] = None
+
     # ── 内訳シートへの書き込み ──
     ws_naiyaku = wb["内訳"]
 
-    # テンプレートのサンプル値を事前クリア（軒天行）
-    # D30=74.6（軒天塗装 破風m合わせ）/ D31=7.5（軒天塗装 玄関・バルコニー）が残存するため
-    ws_naiyaku.cell(row=30, column=4).value = None
-    ws_naiyaku.cell(row=31, column=4).value = None
+    # テンプレートのD列サンプル値を事前クリア
+    # STANDARD_NAIYAKU_MAPPING の has_qty=True 行をすべてクリアすることで
+    # 項目追加時の対象漏れ・将来のサンプル値残存を防ぐ
+    # D31（軒天 玄関・バルコニー合算行）は MAPPING 外のため明示追加
+    _qty_rows_to_clear = (
+        {row for _, (row, has_qty, _, _) in STANDARD_NAIYAKU_MAPPING.items() if has_qty}
+        | {31}  # 専用ロジック書き込み行（MAPPINGには存在しない）
+    )
+    for _r in _qty_rows_to_clear:
+        ws_naiyaku.cell(row=_r, column=4).value = None
 
     # AI積算items → 内訳セルに書き込み
     items = estimation.get("estimation_items", [])
