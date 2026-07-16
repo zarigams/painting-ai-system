@@ -192,62 +192,95 @@ def fill_estimation_sheet(
     sales_rep: str = "",
     company_name: str = "",
     building_type: str = "",
+    estimation_sheet_data: dict = None,
 ) -> Path:
     """
-    積算集計表Excelを生成する
+    積算集計表Excelを生成する。
 
-    Args:
-        template_path: estimation_sheet.xlsx テンプレートのパス
-        output_path:   出力先パス
-        estimation:    quantity_calculatorが返したdict
-        client_name:   お客様名
-        site_address:  現場住所
-        sales_rep:     担当者名
-        company_name:  会社名
-        building_type: 外壁種別（例: サイディング）
-
-    Returns:
-        Path: 書き込み済みファイルのパス
+    estimation_sheet_data が渡された場合（4面入力済み）は per-face 詳細を書き込む。
+    なければ estimation の summary から B列のみ書き込む（旧動作互換）。
     """
     import shutil
     shutil.copy2(template_path, output_path)
     wb = openpyxl.load_workbook(output_path)
     ws = wb["積算集計表"]
 
-    # ── ヘッダー情報 ──
-    ws["A1"] = client_name
-    ws["B1"] = "邸"
-    ws["D1"] = site_address
-    ws["B2"] = building_type
-    ws["F2"] = company_name
-    ws["F3"] = sales_rep
+    # ── ヘッダー ──────────────────────────────────────────
+    if estimation_sheet_data:
+        hdr = estimation_sheet_data.get("header", {})
+        ws["A1"] = hdr.get("client_name", client_name)
+        ws["D1"] = hdr.get("site_address", site_address)
+        ws["B2"] = hdr.get("building_type", building_type)
+        ws["B3"] = hdr.get("roof_type", "")
+        ws["F2"] = hdr.get("company", company_name)
+        ws["F3"] = hdr.get("sales_rep", sales_rep)
+    else:
+        ws["A1"] = client_name
+        ws["D1"] = site_address
+        ws["B2"] = building_type
+        ws["F2"] = company_name
+        ws["F3"] = sales_rep
 
-    # ── 数量マッピング（行番号: マッチキーワードリスト）──
-    # B列（総計）に直接書き込む（方面別D/H/L/P列は空白）
-    # ※既知不具合#5: B列は数式セル（=F+J+N+R）だが静的値で上書きしている。
-    #   v2.0の面別D/H/L/P列書き込みに移行する際に廃止予定。
-    # 軒天行（10/12/13）はv1.0で面別データなし→書き込みスキップ（Estimation Data v1.0 not_applicable/manual対象外）
-    ROW_MAP = {
-        5:  ["外部足場", "足場"],
-        6:  ["屋根塗装", "屋根"],
-        9:  ["破風", "鼻隠"],
-        17: ["外壁塗装", "外壁"],
-        21: ["土台水切"],
-        34: ["雨樋"],
-        41: ["目地シーリング", "目地"],
-    }
+    # ── 4面詳細データがある場合 ───────────────────────────
+    if estimation_sheet_data:
+        from core.estimation_sheet_builder import ROW_MAP, FACE_COLS, FACES
 
-    items = estimation.get("estimation_items", [])
-    for row_num, keywords in ROW_MAP.items():
-        for item in items:
-            name = item.get("item_name", "")
-            if any(kw in name for kw in keywords):
-                qty = item.get("quantity", 0) or 0
-                if qty:
-                    ws.cell(row=row_num, column=2).value = qty  # B列
-                break
+        rows_data = estimation_sheet_data.get("rows", [])
+        for row_def in rows_data:
+            key   = row_def["key"]
+            total = row_def["total"]
+            excel_row = ROW_MAP.get(key)
+            if excel_row is None:
+                continue
+
+            # B列: 総計
+            if total:
+                ws.cell(row=excel_row, column=2).value = total
+
+            # 面別列
+            for f in FACES:
+                face_v = row_def["faces"].get(f, {})
+                gross   = face_v.get("gross", 0)
+                opening = face_v.get("opening", 0)
+                net     = face_v.get("net", gross)  # 開口なければ gross = net
+
+                q_col, o_col, n_col, u_col = FACE_COLS[f]
+
+                if gross:
+                    ws.cell(row=excel_row, column=q_col).value = gross
+                if opening:
+                    ws.cell(row=excel_row, column=o_col).value = opening
+                if net and net != gross:
+                    ws.cell(row=excel_row, column=n_col).value = net
+                elif gross:
+                    ws.cell(row=excel_row, column=n_col).value = gross
+
+    else:
+        # ── 旧動作: estimation の items から B列のみ ──────
+        # 軒天行（10/12/13）はv1.0で面別データなし→書き込みスキップ
+        # （Estimation Data v1.0 not_applicable/manual対象外）
+        OLD_ROW_MAP = {
+            5:  ["外部足場", "足場"],
+            6:  ["屋根塗装", "屋根"],
+            9:  ["破風", "鼻隠"],
+            17: ["外壁塗装", "外壁"],
+            21: ["土台水切"],
+            34: ["雨樋"],
+            41: ["目地シーリング", "目地"],
+        }
+        items = estimation.get("estimation_items", [])
+        for row_num, keywords in OLD_ROW_MAP.items():
+            for item in items:
+                name = item.get("item_name", "")
+                if any(kw in name for kw in keywords):
+                    qty = item.get("quantity", 0) or 0
+                    if qty:
+                        ws.cell(row=row_num, column=2).value = qty
+                    break
 
     wb.save(output_path)
+    return output_path
+
     return output_path
 
 
