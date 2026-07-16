@@ -962,6 +962,20 @@ elif st.session_state.step == 2:
                             )
                         except Exception:
                             st.session_state.drawing_page1_raw = annotated_img
+                        # ── Building Model v1.0 生成（Step A）────────────────────
+                        # _merge_drawing() は変更せず、Building Model を session_state に保存するのみ
+                        try:
+                            from core.building_model import build_building_model
+                            _bm = build_building_model(
+                                drawing_data, annotations or []
+                            )
+                            st.session_state["building_model"] = _bm
+                        except Exception as _bm_e:
+                            st.session_state["building_model"] = {
+                                "_error": str(_bm_e),
+                                "_schema": "Building_Model_v1.0",
+                            }
+                        # ──────────────────────────────────────────────────────────
                         quantities = _merge_drawing(quantities, drawing_data, annotations)
 
                     if "floor_plan_bytes" in st.session_state:
@@ -3016,8 +3030,8 @@ elif st.session_state.step == 4:
 
     # ── デバッグ ─────────────────────────────────────────────
     with st.expander("🔍 デバッグ情報（GPTログ）"):
-        _dbg_tab1, _dbg_tab2, _dbg_tab3, _dbg_tab4 = st.tabs(
-            ["📐 図面解析", "🎤 音声抽出", "🏠 3D解析", "📊 積算結果"])
+        _dbg_tab1, _dbg_tab2, _dbg_tab3, _dbg_tab4, _dbg_tab5 = st.tabs(
+            ["📐 図面解析", "🎤 音声抽出", "🏠 3D解析", "📊 積算結果", "🏗️ Building Model"])
 
         with _dbg_tab1:
             st.markdown("**図面解析 生データ（GPT-4o返答）**")
@@ -3064,3 +3078,41 @@ elif st.session_state.step == 4:
 
         with _dbg_tab4:
             st.json(estimation)
+        with _dbg_tab5:
+            st.markdown("**Building Model v1.0（Step A 確認用）**")
+            _bm_dbg = st.session_state.get("building_model")
+            if _bm_dbg is None:
+                st.info("Building Model 未生成（図面PDFが解析されていません）")
+            elif "_error" in _bm_dbg:
+                st.error("Building Model 生成エラー: " + str(_bm_dbg.get("_error")))
+            else:
+                _bm_faces = _bm_dbg.get("faces", {})
+                _bm_roof  = _bm_dbg.get("roof", {})
+                _bm_meta  = _bm_dbg.get("_meta", {})
+                st.caption("annotations取得件数: {} | GPT全体confidence: {}".format(
+                    _bm_meta.get("annotation_count", "?"),
+                    _bm_meta.get("gpt_overall_confidence", "?"),
+                ))
+                _bm_rows = []
+                for _fn, _fd in _bm_faces.items():
+                    _w = _fd.get("width", {})
+                    _h = _fd.get("eave_height", {})
+                    _bm_rows.append({
+                        "面": _fn,
+                        "面幅value": _w.get("value"),
+                        "面幅source": _w.get("source"),
+                        "面幅confidence": _w.get("confidence"),
+                        "軒高value": _h.get("value"),
+                    })
+                import pandas as pd
+                st.dataframe(pd.DataFrame(_bm_rows), hide_index=True, use_container_width=True)
+                _bm_rh = _bm_roof.get("ridge_height", {})
+                _bm_rs = _bm_roof.get("shape", {})
+                _bm_wc = _bm_dbg.get("water_cutoff", {}).get("perimeter_m", {})
+                st.markdown("**棟高さ**: {} ({}) | **屋根形状**: {} ({}) | **外周(水切参考)**: {}m".format(
+                    _bm_rh.get("value"), _bm_rh.get("confidence"),
+                    _bm_rs.get("value"), _bm_rs.get("confidence"),
+                    _bm_wc.get("value"),
+                ))
+                with st.expander("Building Model フルJSON"):
+                    st.json(_bm_dbg)
