@@ -746,8 +746,8 @@ if st.session_state.step == 1:
         with oc2:
             opt_shutter     = st.number_input("シャッターボックス（m）", min_value=0.0,
                                 value=float(eo.get("shutter_box_length", 0)), step=0.5)
-            opt_soffit_sqm  = st.number_input("軒天（玄関・バルコニー ㎡）", min_value=0.0,
-                                value=float(eo.get("soffit_sqm", 0)), step=0.5)
+            opt_soffit_sqm  = st.number_input("ベランダ軒天面積（㎡）", min_value=0.0,
+                                value=float(eo.get("soffit_balcony_sqm", 0)), step=0.5)
             opt_skylight    = st.number_input("トップライト（箇所）", min_value=0,
                                 value=int(eo.get("skylight_count", 0)), step=1)
         with oc3:
@@ -761,7 +761,7 @@ if st.session_state.step == 1:
             "window_top_length":  opt_window_top,
             "beam_length":        opt_beam,
             "shutter_box_length": opt_shutter,
-            "soffit_sqm":         opt_soffit_sqm,
+            "soffit_balcony_sqm": opt_soffit_sqm,
             "skylight_count":     opt_skylight,
             "do_protection_pipe": opt_protection,
             "do_carport":         opt_carport,
@@ -1017,8 +1017,8 @@ elif st.session_state.step == 2:
                         quantities["beam_length"]       = eo["beam_length"]
                     if eo.get("shutter_box_length", 0):
                         quantities["shutter_box_length"]= eo["shutter_box_length"]
-                    if eo.get("soffit_sqm", 0):
-                        quantities["soffit_sqm"]        = eo["soffit_sqm"]
+                    if eo.get("soffit_balcony_sqm", 0):
+                        quantities["soffit_balcony_sqm"] = eo["soffit_balcony_sqm"]
                     if eo.get("skylight_count", 0):
                         quantities["skylight_count"]    = eo["skylight_count"]
                     if eo.get("do_protection_pipe"):
@@ -2501,7 +2501,7 @@ elif st.session_state.step == 2:
         edit_roof   = ec2.number_input("屋根面積（㎡）",      min_value=0.0, value=float(q.get("roof_area", 0)),         step=1.0)
         edit_fascia = ec3.number_input("破風（m）",           min_value=0.0, value=float(q.get("fascia_length", 0)),     step=0.5)
         ec4, ec5, ec6 = st.columns(3)
-        edit_soffit = ec4.number_input("軒天（m）",           min_value=0.0, value=float(q.get("soffit_length", 0)),     step=0.5)
+        edit_soffit = ec4.number_input("軒天（破風m合わせ）",   min_value=0.0, value=float(q.get("soffit_estimate_m", 0)), step=0.5)
         edit_gutter = ec5.number_input("雨樋（m）",           min_value=0.0, value=float(q.get("gutter_length", 0)),     step=0.5)
         edit_joint  = ec6.number_input("目地シーリング（m）", min_value=0.0, value=float(q.get("joint_seal_length", 0)), step=0.5)
 
@@ -2524,7 +2524,7 @@ elif st.session_state.step == 2:
             q["wall_area"]          = edit_wall
             q["roof_area"]          = edit_roof
             q["fascia_length"]      = edit_fascia
-            q["soffit_length"]      = edit_soffit
+            q["soffit_estimate_m"]  = edit_soffit
             q["gutter_length"]      = edit_gutter
             q["joint_seal_length"]  = edit_joint
             q["scaffold_area"]      = round(edit_wall * 1.1, 1)
@@ -2731,10 +2731,12 @@ elif st.session_state.step == 3:
         with a1:
             fascia_length       = st.number_input("破風・鼻隠し（m）",
                 min_value=0.0, value=float(q.get("fascia_length", 0)), step=0.5)
-            soffit_length       = st.number_input("軒天（m換算）",
-                min_value=0.0, value=float(q.get("soffit_length", 0)), step=0.5)
-            soffit_sqm          = st.number_input("軒天（玄関・バルコニー ㎡）",
-                min_value=0.0, value=float(q.get("soffit_sqm", 0)), step=0.5)
+            soffit_estimate_m   = st.number_input("軒天（破風m合わせ）",
+                min_value=0.0, value=float(q.get("soffit_estimate_m", 0)), step=0.5)
+            soffit_entrance_sqm = st.number_input("玄関庇軒天面積（㎡）",
+                min_value=0.0, value=float(q.get("soffit_entrance_sqm", 0)), step=0.5)
+            soffit_balcony_sqm  = st.number_input("ベランダ軒天面積（㎡）",
+                min_value=0.0, value=float(q.get("soffit_balcony_sqm", 0)), step=0.5)
         with a2:
             gutter_length       = st.number_input("雨樋（m）",
                 min_value=0.0, value=float(q.get("gutter_length", 0)), step=0.5)
@@ -2794,8 +2796,9 @@ elif st.session_state.step == 3:
                 "wall_paint_spec":    wall_paint_spec,
                 "sub_paint_spec":     sub_paint_spec,
                 "fascia_length":      fascia_length,
-                "soffit_length":      soffit_length,
-                "soffit_sqm":         soffit_sqm,
+                "soffit_estimate_m":  soffit_estimate_m,
+                "soffit_entrance_sqm": soffit_entrance_sqm,
+                "soffit_balcony_sqm": soffit_balcony_sqm,
                 "gutter_length":      gutter_length,
                 "water_cutoff_length": water_cutoff_length,
                 "window_top_length":  window_top_length,

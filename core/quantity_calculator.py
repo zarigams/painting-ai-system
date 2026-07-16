@@ -176,19 +176,25 @@ def calculate_from_quantities(
             "塗装工事", "破風・鼻隠し塗装",
             q["fascia_length"], "ｍ", UP["破風鼻隠し塗装"], sub,
         ))
-    # 軒天（m換算）
-    soffit_len = q.get("soffit_length", 0) or q.get("fascia_length", 0)
-    if soffit_len > 0:
+    # 軒天（破風m合わせ）→ 見積書内訳 行30
+    if q.get("soffit_estimate_m", 0) > 0:
         items.append(_item(
-            "塗装工事", "軒天塗装",
-            soffit_len, "ｍ", UP["軒天塗装_m"], sub,
+            "塗装工事", "軒天塗装（破風m合わせ）",
+            q["soffit_estimate_m"], "ｍ", UP["軒天塗装_m"], sub,
         ))
-    # 軒天（玄関・バルコニー）
-    if q.get("soffit_sqm", 0) > 0:
+    # 軒天（玄関庇）→ 見積書内訳 行31に合算
+    if q.get("soffit_entrance_sqm", 0) > 0:
         items.append(_item(
-            "塗装工事", "軒天塗装（玄関・バルコニー）",
-            q["soffit_sqm"], "㎡", UP["軒天塗装_sqm"], sub,
+            "塗装工事", "軒天塗装（玄関庇）",
+            q["soffit_entrance_sqm"], "㎡", UP["軒天塗装_sqm"], sub,
         ))
+    # 軒天（ベランダ）→ 見積書内訳 行31に合算
+    if q.get("soffit_balcony_sqm", 0) > 0:
+        items.append(_item(
+            "塗装工事", "軒天塗装（ベランダ）",
+            q["soffit_balcony_sqm"], "㎡", UP["軒天塗装_sqm"], sub,
+        ))
+    # soffit_standard_sqm は v1.0 対象外（not_applicable）→ item生成しない
     if q.get("gutter_length", 0) > 0:
         items.append(_item(
             "塗装工事", "雨樋塗装",
