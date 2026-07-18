@@ -281,7 +281,7 @@ if not st.session_state.logged_in:
 with st.sidebar:
     st.markdown(f"### 🏢 {st.session_state.company_name or ''}様")
     st.markdown("---")
-    step_labels = ["① 現場メモ入力", "② AI自動積算", "③ 詳細確認（任意）", "④ 見積書出力"]
+    step_labels = ["① 現場メモ入力", "② AI自動積算", "③ 図面手動積算", "④ 数量確認", "⑤ 見積書出力"]
     cur = st.session_state.step
     for i, label in enumerate(step_labels, 1):
         if i < cur:
@@ -348,7 +348,7 @@ with st.sidebar:
                             st.session_state.estimation = _ed["estimation"]
                             if _ed.get("estimation_sheet_data"):
                                 st.session_state.estimation_sheet_data = _ed["estimation_sheet_data"]
-                            st.session_state.step = 4
+                            st.session_state.step = 5
                             st.success(f"{_e['client_name']} を読み込みました")
                             st.rerun()
     st.markdown("---")
@@ -905,7 +905,7 @@ elif st.session_state.step == 2:
             from core.voice_extractor import build_quantities
             st.session_state.quantities = build_quantities({})
             log_ui("STEP2: データなし→手動フォームへ")
-            st.session_state.step = 3
+            st.session_state.step = 4
             st.rerun()
         if st.button("← 入力に戻る"):
             log_ui("STEP2→STEP1: 入力に戻る")
@@ -1066,7 +1066,7 @@ elif st.session_state.step == 2:
             from core.voice_extractor import build_quantities
             st.session_state.quantities = build_quantities({})
             log_ui("STEP2: AI使わず手動入力へ")
-            st.session_state.step = 3
+            st.session_state.step = 4
             st.rerun()
         if st.button("← 入力に戻る"):
             log_ui("STEP2→STEP1: 入力に戻る")
@@ -2652,16 +2652,21 @@ elif st.session_state.step == 2:
                         st.caption("　・ " + c["text"])
 
         st.markdown("---")
-        b1, b2 = st.columns(2)
+        b1, b2, b3 = st.columns(3)
         with b1:
-            if st.button("📝 詳細を確認・修正する", use_container_width=True):
-                log_ui("STEP2→STEP3: 詳細確認へ")
+            if st.button("📐 図面で手動計測する", use_container_width=True):
+                log_ui("STEP2→STEP3: 図面手動積算へ")
                 st.session_state.step = 3
                 st.rerun()
         with b2:
-            if st.button("✅ この内容で見積書へ →", type="primary", use_container_width=True):
-                log_ui("STEP2→STEP4: 見積書へ直接進む")
+            if st.button("📝 数量を確認・修正する", use_container_width=True):
+                log_ui("STEP2→STEP4: 数量確認へ")
                 st.session_state.step = 4
+                st.rerun()
+        with b3:
+            if st.button("✅ この内容で見積書へ", type="primary", use_container_width=True):
+                log_ui("STEP2→STEP5: 見積書へ直接進む")
+                st.session_state.step = 5
                 st.rerun()
         if st.button("← 入力に戻る"):
             log_ui("STEP2→STEP1: 入力に戻る（積算完了後）")
@@ -2670,10 +2675,85 @@ elif st.session_state.step == 2:
 
 
 # ═════════════════════════════════════════════════════════════
-# STEP 3: 数量確認フォーム
+# STEP 3: 図面手動積算
 # ═════════════════════════════════════════════════════════════
 elif st.session_state.step == 3:
-    st.header("③ 数量確認フォーム")
+    st.header("③ 図面手動積算")
+    st.caption("図面から直接面積・長さを計測します（スキップ可能）")
+
+    # ── 図面ソースを収集 ────────────────────────────────────
+    from core.drawing_import import load_drawing_pages_with_errors
+    import os as _os
+
+    step1_sources: list = []
+    pdf_bytes = st.session_state.get("pdf_bytes")
+    floor_plan_bytes = st.session_state.get("floor_plan_bytes")
+    if pdf_bytes:
+        step1_sources.append(("図面PDF", ".pdf", pdf_bytes))
+    if floor_plan_bytes:
+        step1_sources.append(("間取り図", ".pdf", floor_plan_bytes))
+
+    # ── STEP3 追加図面アップローダー ──────────────────────
+    additional_files = st.file_uploader(
+        "追加の図面ファイル（PDF / PNG / JPEG）",
+        type=["pdf", "png", "jpg", "jpeg"],
+        accept_multiple_files=True,
+        key="drawing_upload_step3",
+    )
+    additional_sources = [
+        (f.name, _os.path.splitext(f.name)[1].lower(), f.getvalue())
+        for f in (additional_files or [])
+    ]
+    all_sources = step1_sources + additional_sources
+
+    pages, load_errors = load_drawing_pages_with_errors(all_sources)
+
+    for err in load_errors:
+        st.error(err)
+
+    if not pages:
+        st.info("図面が見つかりません。STEP1で図面PDFまたは画像をアップロードしてください。")
+    else:
+        # ── ページセレクタ ──────────────────────────────────
+        page_labels = [p["label"] for p in pages]
+        selected_idx = st.selectbox(
+            "ページを選択",
+            range(len(pages)),
+            format_func=lambda i: page_labels[i],
+            key="drawing_page_selector",
+        )
+        selected_page = pages[selected_idx]
+
+        # ── 図面表示 ────────────────────────────────────────
+        st.image(
+            selected_page["img_bytes"],
+            caption=selected_page["label"],
+            use_container_width=True,
+        )
+        st.caption(
+            f"サイズ: {selected_page['width']} × {selected_page['height']} px"
+        )
+
+    # ── ナビゲーション ──────────────────────────────────────
+    st.markdown("---")
+    nav1, nav2 = st.columns(2)
+    with nav1:
+        if st.button("← AI積算に戻る", use_container_width=True):
+            log_ui("STEP3→STEP2: AI積算に戻る")
+            st.session_state.step = 2
+            st.rerun()
+    with nav2:
+        if st.button("スキップ → 数量確認へ", type="primary", use_container_width=True):
+            log_ui("STEP3→STEP4: 数量確認へスキップ")
+            st.session_state.step = 4
+            st.rerun()
+
+
+# ═════════════════════════════════════════════════════════════
+# STEP 4: 数量確認フォーム
+# ═════════════════════════════════════════════════════════════
+elif st.session_state.step == 4:
+    st.header("④ 数量確認フォーム")
     st.caption("AI解析結果を確認・修正し、実際の数量を入力してください")
 
     q = st.session_state.quantities.copy()
@@ -2839,20 +2919,20 @@ elif st.session_state.step == 3:
                 "do_roof": do_roof, "do_foundation": do_foundation,
                 "total": estimation.get("total"),
             })
-            st.session_state.step = 4
+            st.session_state.step = 5
             st.rerun()
 
-    if st.button("← 自動積算に戻る"):
-        log_ui("STEP3→STEP2: 自動積算に戻る")
-        st.session_state.step = 2
+    if st.button("← 図面手動積算へ戻る"):
+        log_ui("STEP4→STEP3: 図面手動積算に戻る")
+        st.session_state.step = 3
         st.rerun()
 
 
 # ═════════════════════════════════════════════════════════════
-# STEP 4: 見積書出力
+# STEP 5: 見積書出力
 # ═════════════════════════════════════════════════════════════
-elif st.session_state.step == 4:
-    st.header("④ 見積書完成")
+elif st.session_state.step == 5:
+    st.header("⑤ 見積書完成")
 
     proj       = st.session_state.project
     estimation = st.session_state.estimation
@@ -3008,8 +3088,8 @@ elif st.session_state.step == 4:
     b1, b2 = st.columns(2)
     with b1:
         if st.button("← 数量を確認・修正する", use_container_width=True):
-            log_ui("STEP4→STEP3: 数量確認に戻る")
-            st.session_state.step = 3
+            log_ui("STEP5→STEP4: 数量確認に戻る")
+            st.session_state.step = 4
             st.rerun()
     with b2:
         if st.button("🆕 新しい案件を作成", type="primary", use_container_width=True):
