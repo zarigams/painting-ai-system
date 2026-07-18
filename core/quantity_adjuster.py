@@ -24,7 +24,7 @@ _NUMERIC_META = {
     "scaffold_area":       ("外部足場",       "㎡"),
     "roof_scaffold_area":  ("屋根足場",       "㎡"),
     "fascia_length":       ("破風・鼻隠し",   "m"),
-    "soffit_length":       ("軒天",           "m"),
+    "soffit_estimate_m":   ("軒天",           "m"),
     "gutter_length":       ("雨樋",           "m"),
     "water_cutoff_length": ("土台水切",       "m"),
     "joint_seal_length":   ("目地シーリング", "m"),

@@ -78,6 +78,14 @@ def calculate_from_quantities(
         estimation dict（estimation_items, subtotal, tax_amount, total 等）
     """
     q = quantities
+    # 旧キー → 新キー 互換処理（過去案件JSONとの読込互換性）
+    if "soffit_length" in q and "soffit_estimate_m" not in q:
+        q = dict(q)
+        q["soffit_estimate_m"] = q.pop("soffit_length")
+    if "soffit_sqm" in q and "soffit_entrance_sqm" not in q and "soffit_balcony_sqm" not in q:
+        q = dict(q)
+        q["soffit_balcony_sqm"] = q.pop("soffit_sqm")
+        q.setdefault("soffit_entrance_sqm", 0.0)
     items = []
     UP = dict(UNIT_PRICES)
     if custom_prices:

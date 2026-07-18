@@ -25,3 +25,9 @@ Thumbs.db
 
 # テンプレートExcelは除外しない
 !data/templates/*.xlsx
+
+# 実行時ログ（JSONLファイル）
+data/logs/
+
+# 一時ファイル
+*.tmp

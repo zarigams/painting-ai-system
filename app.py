@@ -315,7 +315,7 @@ with st.sidebar:
             st.session_state.estimation_rules = rules_input
             from core.auth import save_estimation_rules
             save_estimation_rules(st.session_state.company_id, rules_input)
-            log_admin("積算ルール保存", {"rules_preview": rules_input[:200]})
+            log_admin("積算ルール保存", {"rules_length": len(rules_input)})
             st.success("保存しました")
 
     if st.button("💰 単価設定", use_container_width=True, key="open_price_settings"):
@@ -659,7 +659,7 @@ if st.session_state.step == 1:
                     text = llm.transcribe_audio(audio_input.getvalue(), "memo.webm")
                     prev = st.session_state.voice_memo
                     st.session_state.voice_memo = (prev + "\n" + text).strip() if prev else text
-                    log_ui("STEP1: 音声文字起こし完了", {"text_preview": text[:200], "audio_size": len(audio_input.getvalue())})
+                    log_ui("STEP1: 音声文字起こし完了", {"text_len": len(text), "audio_size": len(audio_input.getvalue())})
                     st.success("文字起こし完了！右の欄に反映しました。")
                     st.rerun()
                 except Exception as e:
@@ -805,8 +805,6 @@ if st.session_state.step == 1:
             st.session_state.auto_done  = False
             st.session_state.step = 2
             log_ui("STEP1→STEP2遷移: 見積もり作成開始", {
-                "client_name": client_name,
-                "site_address": site_address,
                 "has_pdf": bool(pdf_file),
                 "has_photos": bool(photo_files),
                 "has_voice": bool(voice_memo.strip()),
@@ -2631,7 +2629,6 @@ elif st.session_state.step == 2:
                             st.session_state.last_correction = result
                             st.session_state["_clear_correction"] = True
                             log_ui("STEP2: 修正反映", {
-                                "correction_text": correction_text[:200],
                                 "changes": result["changes"],
                                 "explanation": result.get("explanation", ""),
                             })
@@ -3016,7 +3013,7 @@ elif st.session_state.step == 4:
             st.rerun()
     with b2:
         if st.button("🆕 新しい案件を作成", type="primary", use_container_width=True):
-            log_ui("STEP4: 新規案件作成", {"client_name": st.session_state.get("project", {}).get("client_name")})
+            log_ui("STEP4: 新規案件作成")
             for k in ["step", "project", "drawing_data", "image_data",
                       "quantities", "estimation", "pdf_bytes",
                       "photo_bytes_list", "voice_memo",
