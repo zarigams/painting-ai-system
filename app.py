@@ -2724,14 +2724,38 @@ elif st.session_state.step == 3:
         )
         selected_page = pages[selected_idx]
 
-        # ── 図面表示 ────────────────────────────────────────
-        st.image(
-            selected_page["img_bytes"],
-            caption=selected_page["label"],
-            use_container_width=True,
+        # ── 手動計測キャンバス（A2） ────────────────────────
+        # ページ識別子: ファイルハッシュ + ページ番号（ラベル変更でも不変）
+        page_key = f'{selected_page["file_hash"]}:p{selected_page["page"]}'
+
+        # ページ単位の状態 dict をセッションで管理
+        if "canvas_states" not in st.session_state:
+            st.session_state.canvas_states = {}
+
+        # ページ切替・rerun 後の復元用: 保存済みの状態 dict を渡す
+        canvas_state = st.session_state.canvas_states.get(page_key)
+
+        from core.drawing_canvas import drawing_canvas as _drawing_canvas
+        _canvas_result = _drawing_canvas(
+            image_bytes=selected_page["img_bytes"],
+            image_width=selected_page["width"],
+            image_height=selected_page["height"],
+            page_key=page_key,
+            canvas_height=600,
+            canvas_state=canvas_state,
+            key=f"dc_{page_key}",
         )
+
+        # 操作完了時のみ値が返る → ページ状態全体を更新して保存
+        if _canvas_result is not None:
+            st.session_state.canvas_states[page_key] = _canvas_result
+
+        # 現在のページの線数を表示
+        _current_state = st.session_state.canvas_states.get(page_key, {})
+        _current_lines = _current_state.get("objects", [])
         st.caption(
             f"サイズ: {selected_page['width']} × {selected_page['height']} px"
+            f"　|　計測線: {len(_current_lines)} 本"
         )
 
     # ── ナビゲーション ──────────────────────────────────────

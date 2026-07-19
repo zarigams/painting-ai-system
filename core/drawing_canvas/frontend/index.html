@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Drawing Canvas</title>
+  <script src="fabric.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f0f2f6;
+      overflow: hidden;
+    }
+
+    /* ── ツールバー ─────────────────────────────────── */
+    #toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      background: #ffffff;
+      border-bottom: 1px solid #d9d9d9;
+      height: 44px;
+      flex-shrink: 0;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 12px;
+      border: 1px solid #d9d9d9;
+      border-radius: 4px;
+      background: #ffffff;
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s;
+    }
+    .btn:hover { background: #f5f5f5; }
+    .btn.active {
+      background: #1677ff;
+      border-color: #1677ff;
+      color: #ffffff;
+    }
+    .btn.danger { border-color: #ff4d4f; color: #ff4d4f; }
+    .btn.danger:hover { background: #fff1f0; }
+
+    #mode-label {
+      font-size: 12px;
+      color: #666;
+      margin-left: 4px;
+    }
+    #line-count {
+      margin-left: auto;
+      font-size: 12px;
+      color: #888;
+    }
+    #zoom-label {
+      font-size: 12px;
+      color: #555;
+      min-width: 52px;
+      text-align: right;
+    }
+
+    /* ── キャンバスラッパー ──────────────────────────── */
+    #canvas-wrapper {
+      position: relative;
+      overflow: hidden;
+      background: #e8e8e8;
+      cursor: crosshair;
+    }
+    #canvas-wrapper.mode-move          { cursor: grab; }
+    #canvas-wrapper.mode-move.dragging { cursor: grabbing; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+
+<!-- ツールバー -->
+<div id="toolbar">
+  <button class="btn active" id="btn-line" title="線を引くモード">✏️ 線モード</button>
+  <button class="btn"        id="btn-move" title="図面をパンするモード">✋ 移動モード</button>
+  <span id="mode-label">クリック＆ドラッグで直線を描画</span>
+  <button class="btn danger" id="btn-clear" title="すべての線を削除">🗑 全消去</button>
+  <button class="btn"        id="btn-reset" title="初期表示に戻す">⟳ リセット</button>
+  <span id="zoom-label">100%</span>
+  <span id="line-count">線: 0 本</span>
+</div>
+
+<!-- Fabric.js キャンバス -->
+<div id="canvas-wrapper">
+  <canvas id="c"></canvas>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const TOOLBAR_H = 44;  // CSS で定義したツールバー高さ (px)
+
+  // ─── Streamlit 双方向通信 ──────────────────────────────────
+  const Streamlit = {
+    onRender(cb) {
+      // streamlit:render を受信したら renderReceived フラグを立てて再試行を停止する
+      let renderReceived = false;
+      window.addEventListener("message", (ev) => {
+        if (
+          ev.source === window.parent &&
+          ev.data &&
+          ev.data.type === "streamlit:render"
+        ) {
+          renderReceived = true;
+          cb(ev.data.args || {});
+        }
+      });
+      // componentReady を送信する（Streamlit の React が初期化済みでない場合に備え
+      // 500ms ごとに最大 60s 再試行する。これは Streamlit component-lib の推奨動作）
+      function sendReady() {
+        window.parent.postMessage(
+          { isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 },
+          "*"
+        );
+      }
+      sendReady();
+      const retryId = setInterval(function () {
+        if (renderReceived) { clearInterval(retryId); return; }
+        sendReady();
+      }, 500);
+      setTimeout(function () { clearInterval(retryId); }, 60000);
+    },
+    setValue(value) {
+      window.parent.postMessage(
+        { isStreamlitMessage: true, type: "streamlit:setComponentValue", value: value },
+        "*"
+      );
+    },
+    setFrameHeight(height) {
+      window.parent.postMessage(
+        { isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: height },
+        "*"
+      );
+    },
+  };
+
+  // ─── 状態変数 ────────────────────────────────────────────
+  let canvas            = null;   // Fabric.Canvas
+  let bgImage           = null;   // Fabric.Image（背景）
+  let imageWidth        = 0;      // 元画像 px 幅
+  let imageHeight       = 0;      // 元画像 px 高さ
+  let fitZoom           = 0;      // 初期フィット倍率（背景ロード前は 0、ロード後に更新）
+  let canvasDisplayHeight = 600;  // キャンバス表示高さ（ツールバー含まず）
+  let currentPageKey    = "";     // 現在のページキー
+  let mode              = "line"; // "line" | "move"
+
+  // 線描画中の状態
+  let isDrawing         = false;
+  let drawStartX        = 0;
+  let drawStartY        = 0;
+  let activePreviewLine = null;
+
+  // パン中の状態
+  let isPanning  = false;
+  let panLastX   = 0;
+  let panLastY   = 0;
+
+  // ズームデバウンスタイマー
+  let zoomDebounceTimer = null;
+  const ZOOM_DEBOUNCE_MS = 300;
+
+  // 前回レンダリング情報（同一ページ検知用）
+  let lastPageKey      = null;
+  let lastImageDataUrl = null;
+
+  // 非同期画像読込の競合防止キー
+  let activeLoadKey = null;
+
+  // DOM 要素
+  const btnLine   = document.getElementById("btn-line");
+  const btnMove   = document.getElementById("btn-move");
+  const btnClear  = document.getElementById("btn-clear");
+  const btnReset  = document.getElementById("btn-reset");
+  const modeLabel = document.getElementById("mode-label");
+  const lineCount = document.getElementById("line-count");
+  const zoomLabel = document.getElementById("zoom-label");
+  const wrapper   = document.getElementById("canvas-wrapper");
+
+  // ─── レイアウト適用 ──────────────────────────────────────
+  function applyLayout() {
+    const cw = document.body.clientWidth || 800;
+    const ch = canvasDisplayHeight;
+    if (canvas) {
+      canvas.setWidth(cw);
+      canvas.setHeight(ch);
+    }
+    wrapper.style.width  = cw + "px";
+    wrapper.style.height = ch + "px";
+    return { cw, ch };
+  }
+
+  // ─── Fabric.js 初期化 ─────────────────────────────────────
+  function initCanvas() {
+    const { cw, ch } = applyLayout();
+    canvas = new fabric.Canvas("c", {
+      width: cw,
+      height: ch,
+      selection: false,
+      renderOnAddRemove: true,
+    });
+    canvas.on("mouse:down",  onMouseDown);
+    canvas.on("mouse:move",  onMouseMove);
+    canvas.on("mouse:up",    onMouseUp);
+    canvas.on("mouse:wheel", onMouseWheel);
+  }
+
+  // ─── ビューポート値の検証 ────────────────────────────────
+  function isValidViewport(vt) {
+    if (!Array.isArray(vt) || vt.length !== 6) return false;
+    for (const v of vt) {
+      if (typeof v !== "number" || !isFinite(v) || isNaN(v)) return false;
+    }
+    // ズーム成分（a=vt[0], d=vt[3]）は正値でなければならない
+    if (vt[0] <= 0 || vt[3] <= 0) return false;
+    return true;
+  }
+
+  // ─── 背景画像読み込み（fromURL 完了後に状態を復元） ──────
+  function loadBackground(dataUrl, imgW, imgH, stateToRestore) {
+    imageWidth  = imgW;
+    imageHeight = imgH;
+
+    // この読み込みを識別するキーを記録（競合防止）
+    const myLoadKey = currentPageKey;
+    activeLoadKey   = myLoadKey;
+
+    fabric.Image.fromURL(dataUrl, function (img) {
+      // 別ページの読み込みが開始されていれば破棄（古い結果を無視）
+      if (activeLoadKey !== myLoadKey) return;
+
+      img.set({
+        left: 0,
+        top: 0,
+        selectable: false,
+        evented: false,
+        originX: "left",
+        originY: "top",
+      });
+
+      bgImage = img;
+      canvas.add(img);
+      img.sendToBack();
+
+      // ビューポート復元 or 初期フィット
+      const { cw, ch } = applyLayout();
+      const savedVt = stateToRestore && stateToRestore.viewport_transform;
+
+      // fitZoom は常に再計算（初期フィット倍率を正確に保持するため）
+      fitZoom = Math.min(cw / imgW, ch / imgH);
+
+      if (isValidViewport(savedVt)) {
+        // 保存済みのビューポートを復元
+        canvas.setViewportTransform(savedVt.slice());
+      } else {
+        // 初期フィット: 縦横両方が収まる倍率で中央寄せ
+        const offsetX = (cw - imgW * fitZoom) / 2;
+        const offsetY = (ch - imgH * fitZoom) / 2;
+        canvas.setViewportTransform([fitZoom, 0, 0, fitZoom, offsetX, offsetY]);
+      }
+
+      canvas.requestRenderAll();
+      updateZoomLabel();
+
+      // 直線を復元
+      const linesToRestore = stateToRestore ? (stateToRestore.objects || []) : [];
+      restoreLines(linesToRestore);
+    }, { crossOrigin: "Anonymous" });
+  }
+
+  // ─── 初期フィット表示へリセット ──────────────────────────
+  function resetView() {
+    if (!canvas) return;
+    const { cw, ch } = applyLayout();
+    fitZoom = Math.min(cw / imageWidth, ch / imageHeight);
+    const offsetX = (cw - imageWidth  * fitZoom) / 2;
+    const offsetY = (ch - imageHeight * fitZoom) / 2;
+    canvas.setViewportTransform([fitZoom, 0, 0, fitZoom, offsetX, offsetY]);
+    canvas.requestRenderAll();
+    updateZoomLabel();
+  }
+
+  // ─── モード切替 ──────────────────────────────────────────
+  function setMode(m) {
+    mode = m;
+    if (m === "line") {
+      btnLine.classList.add("active");
+      btnMove.classList.remove("active");
+      modeLabel.textContent = "クリック＆ドラッグで直線を描画";
+      wrapper.classList.remove("mode-move");
+    } else {
+      btnMove.classList.add("active");
+      btnLine.classList.remove("active");
+      modeLabel.textContent = "ドラッグで図面をパン";
+      wrapper.classList.add("mode-move");
+    }
+  }
+
+  btnLine.addEventListener("click", () => setMode("line"));
+  btnMove.addEventListener("click", () => setMode("move"));
+
+  // ─── UI 更新 ─────────────────────────────────────────────
+  function updateZoomLabel() {
+    if (!canvas) return;
+    const pct = Math.round(canvas.viewportTransform[0] * 100);
+    zoomLabel.textContent = pct + "%";
+  }
+
+  function getCompletedLines() {
+    return canvas.getObjects().filter(
+      (o) => o.type === "line" && o._completed === true
+    );
+  }
+
+  function updateLineCount() {
+    const n = getCompletedLines().length;
+    lineCount.textContent = "線: " + n + " 本";
+  }
+
+  // ─── 状態シリアライズ ────────────────────────────────────
+  // JS → Python で返す形式:
+  // {
+  //   page_key: str,
+  //   viewport_transform: [a,b,c,d,e,f],  // 6要素
+  //   objects: [{"type":"line","orig_x1":...,...}]
+  // }
+  function serializeLines() {
+    return getCompletedLines().map((ln) => ({
+      type:      "line",
+      orig_x1:   ln._origX1,
+      orig_y1:   ln._origY1,
+      orig_x2:   ln._origX2,
+      orig_y2:   ln._origY2,
+      length_px: ln._lengthPx,
+    }));
+  }
+
+  function serializeState() {
+    const vt = canvas.viewportTransform;
+    return {
+      page_key:           currentPageKey,
+      viewport_transform: [vt[0], vt[1], vt[2], vt[3], vt[4], vt[5]],
+      objects:            serializeLines(),
+    };
+  }
+
+  function sendToStreamlit() {
+    if (!canvas) return;
+    Streamlit.setValue(serializeState());
+  }
+
+  // ─── ボタンイベント ───────────────────────────────────────
+  btnClear.addEventListener("click", () => {
+    getCompletedLines().forEach((ln) => canvas.remove(ln));
+    canvas.requestRenderAll();
+    updateLineCount();
+    sendToStreamlit();  // 消去後の空状態を Python へ送信
+  });
+
+  btnReset.addEventListener("click", () => {
+    resetView();
+    sendToStreamlit();  // リセット後の viewport を Python へ送信
+  });
+
+  // ─── 直線を復元 ──────────────────────────────────────────
+  function restoreLines(objects) {
+    if (!Array.isArray(objects) || objects.length === 0) return;
+
+    objects.forEach((item) => {
+      if (!item || item.type !== "line") return;
+      const x1 = item.orig_x1, y1 = item.orig_y1;
+      const x2 = item.orig_x2, y2 = item.orig_y2;
+      if (typeof x1 !== "number" || typeof y1 !== "number" ||
+          typeof x2 !== "number" || typeof y2 !== "number") return;
+
+      const sw = 2 / canvas.getZoom();
+      const ln = new fabric.Line([x1, y1, x2, y2], {
+        stroke:      "#e63946",
+        strokeWidth: sw,
+        selectable:  false,
+        evented:     false,
+        _completed:  true,
+        _origX1:     x1,
+        _origY1:     y1,
+        _origX2:     x2,
+        _origY2:     y2,
+        _lengthPx:   item.length_px,
+      });
+      canvas.add(ln);
+    });
+
+    canvas.requestRenderAll();
+    updateLineCount();
+  }
+
+  // ─── マウスイベント ───────────────────────────────────────
+  function onMouseDown(opt) {
+    const e = opt.e;
+
+    if (mode === "move") {
+      isPanning = true;
+      panLastX  = e.clientX;
+      panLastY  = e.clientY;
+      wrapper.classList.add("dragging");
+      return;
+    }
+
+    // 線モード: 描画開始
+    // canvas.getPointer() → ワールド座標（= 元画像ピクセル座標）
+    const ptr  = canvas.getPointer(e);
+    isDrawing  = true;
+    drawStartX = ptr.x;
+    drawStartY = ptr.y;
+
+    activePreviewLine = new fabric.Line(
+      [drawStartX, drawStartY, drawStartX, drawStartY],
+      {
+        stroke:      "#e63946",
+        strokeWidth: 2 / canvas.getZoom(),
+        selectable:  false,
+        evented:     false,
+        _completed:  false,
+      }
+    );
+    canvas.add(activePreviewLine);
+  }
+
+  function onMouseMove(opt) {
+    const e = opt.e;
+
+    if (mode === "move" && isPanning) {
+      const dx = e.clientX - panLastX;
+      const dy = e.clientY - panLastY;
+      panLastX = e.clientX;
+      panLastY = e.clientY;
+      const vt = canvas.viewportTransform;
+      canvas.setViewportTransform([vt[0], vt[1], vt[2], vt[3], vt[4] + dx, vt[5] + dy]);
+      canvas.requestRenderAll();
+      return;
+    }
+
+    if (mode === "line" && isDrawing && activePreviewLine) {
+      const ptr = canvas.getPointer(e);
+      activePreviewLine.set({
+        x2:          ptr.x,
+        y2:          ptr.y,
+        strokeWidth: 2 / canvas.getZoom(),
+      });
+      canvas.requestRenderAll();
+    }
+  }
+
+  function onMouseUp(opt) {
+    const e = opt.e;
+
+    if (mode === "move" && isPanning) {
+      isPanning = false;
+      wrapper.classList.remove("dragging");
+      sendToStreamlit();  // パン完了 → Python へ送信
+      return;
+    }
+
+    if (mode === "line" && isDrawing) {
+      isDrawing = false;
+
+      const ptr = canvas.getPointer(e);
+      const x1 = drawStartX, y1 = drawStartY;
+      const x2 = ptr.x,      y2 = ptr.y;
+      const dx = x2 - x1,    dy = y2 - y1;
+      const lengthPx = Math.sqrt(dx * dx + dy * dy);
+
+      if (activePreviewLine) {
+        canvas.remove(activePreviewLine);
+        activePreviewLine = null;
+      }
+
+      // 3px 未満はクリック誤操作として破棄
+      if (lengthPx < 3) return;
+
+      // 完了済み線を追加（ワールド座標で保存）
+      const sw = 2 / canvas.getZoom();
+      const completedLine = new fabric.Line([x1, y1, x2, y2], {
+        stroke:      "#e63946",
+        strokeWidth: sw,
+        selectable:  false,
+        evented:     false,
+        _completed:  true,
+        _origX1:     x1,
+        _origY1:     y1,
+        _origX2:     x2,
+        _origY2:     y2,
+        _lengthPx:   lengthPx,
+      });
+      canvas.add(completedLine);
+      canvas.requestRenderAll();
+      updateLineCount();
+      sendToStreamlit();  // 線確定 → Python へ送信
+    }
+  }
+
+  // ─── ホイールズーム ───────────────────────────────────────
+  function onMouseWheel(opt) {
+    const e = opt.e;
+    e.preventDefault();
+    e.stopPropagation();
+
+    let zoom = canvas.getZoom();
+    zoom *= 0.999 ** e.deltaY;
+    zoom = Math.max(0.05, Math.min(20, zoom));
+
+    canvas.zoomToPoint({ x: e.offsetX, y: e.offsetY }, zoom);
+    canvas.requestRenderAll();
+    updateZoomLabel();
+
+    // ズーム完了（静止300ms後）に Python へ送信
+    clearTimeout(zoomDebounceTimer);
+    zoomDebounceTimer = setTimeout(() => { sendToStreamlit(); }, ZOOM_DEBOUNCE_MS);
+  }
+
+  // ─── テスト用 API（Playwright から呼び出す）───────────────
+  window.__testAPI = {
+    /** 現在の状態全体を返す */
+    getState: () => (canvas ? serializeState() : null),
+    /** 現在のズーム倍率 */
+    getZoom:  () => (canvas ? canvas.getZoom() : null),
+    /** 初期フィット倍率 */
+    getFitZoom: () => fitZoom,
+    /**
+     * ワールド座標 → フレーム内 CSS 座標（ツールバー分を含む）
+     * Playwright の iframe.evaluate() から呼び出す想定
+     */
+    worldToFrameCoords: (wx, wy) => {
+      if (!canvas) return null;
+      const vt = canvas.viewportTransform;
+      return {
+        x: wx * vt[0] + vt[4],
+        y: wy * vt[3] + vt[5] + TOOLBAR_H,
+      };
+    },
+  };
+
+  // ─── Streamlit からの props を受信 ───────────────────────
+  Streamlit.onRender(function (args) {
+    const {
+      imageDataUrl,
+      imageWidth:   imgW,
+      imageHeight:  imgH,
+      pageKey,
+      canvasState,         // 保存済み状態 dict {page_key, viewport_transform, objects}
+      canvasHeight: propsCanvasHeight,
+    } = args;
+
+    // canvasHeight を props から明示的に設定
+    if (propsCanvasHeight && propsCanvasHeight > 0) {
+      canvasDisplayHeight = propsCanvasHeight;
+    }
+
+    // キャンバス未初期化なら初期化
+    if (!canvas) {
+      initCanvas();
+    }
+
+    // ページ変更または初回ロード → 背景を再ロード
+    if (pageKey !== lastPageKey || imageDataUrl !== lastImageDataUrl) {
+      lastPageKey      = pageKey;
+      lastImageDataUrl = imageDataUrl;
+      currentPageKey   = pageKey;
+
+      // 描画中状態のクリア
+      if (activePreviewLine) { activePreviewLine = null; }
+      isDrawing = false;
+
+      // キャンバスをクリア（背景・直線を含む全オブジェクト）
+      canvas.clear();
+      bgImage = null;
+
+      // 背景画像を読み込み、コールバック内で状態を復元
+      loadBackground(imageDataUrl, imgW, imgH, canvasState || null);
+    }
+    // 同一ページの rerun → iframe が持続しているのでキャンバス状態はそのまま
+
+    // iframe 高さを明示的に Streamlit へ通知
+    Streamlit.setFrameHeight(canvasDisplayHeight + TOOLBAR_H);
+  });
+
+})();
+</script>
+</body>
+</html>
