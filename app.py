@@ -266,6 +266,24 @@ for _k, _v in DEFAULTS.items():
         st.session_state[_k] = _v
 
 # ─────────────────────────────────────────────────────────────
+# 案件リセット対象キー（「最初からやり直す」「新しい案件を作成」で共通利用）
+# 会社設定（estimation_rules / unit_prices / theme 等）は含まない＝案件データのみ
+# ─────────────────────────────────────────────────────────────
+CASE_RESET_KEYS = [
+    # 既存（従来の2箇所で個別に列挙されていたキー）
+    "step", "project", "drawing_data", "image_data",
+    "quantities", "estimation", "voice_memo",
+    "voice_extras", "voice_raw", "auto_done",
+    "correction_history", "last_correction",
+    "correction_input", "pdf_bytes", "photo_bytes_list",
+    # 追加（コードベース精査で見つかった漏れ）
+    "estimation_sheet_data", "extra_options", "floor_plan_bytes",
+    "drawing_annotated_img", "drawing_annotations", "drawing_page1_raw",
+    "canvas_states", "drawing_page_selector", "drawing_upload_step3",
+    "_voice_gpt_raw", "_3d_gpt_raw", "_3d_trace_png",
+]
+
+# ─────────────────────────────────────────────────────────────
 # ログイン
 # ─────────────────────────────────────────────────────────────
 # テーマをログイン画面にも適用
@@ -293,11 +311,7 @@ with st.sidebar:
     st.markdown("---")
     if st.button("🔄 最初からやり直す", use_container_width=True):
         log_ui("最初からやり直す", {"from_step": st.session_state.get("step")})
-        for k in ["step", "project", "drawing_data", "image_data",
-                  "quantities", "estimation", "voice_memo",
-                  "voice_extras", "voice_raw", "auto_done",
-                  "correction_history", "last_correction",
-                  "correction_input", "pdf_bytes", "photo_bytes_list"]:
+        for k in CASE_RESET_KEYS:
             if k in st.session_state:
                 del st.session_state[k]
         st.session_state.step = 1
@@ -3118,12 +3132,7 @@ elif st.session_state.step == 5:
     with b2:
         if st.button("🆕 新しい案件を作成", type="primary", use_container_width=True):
             log_ui("STEP4: 新規案件作成")
-            for k in ["step", "project", "drawing_data", "image_data",
-                      "quantities", "estimation", "pdf_bytes",
-                      "photo_bytes_list", "voice_memo",
-                      "voice_extras", "voice_raw", "auto_done",
-                      "correction_history", "last_correction",
-                      "correction_input"]:
+            for k in CASE_RESET_KEYS:
                 if k in st.session_state:
                     del st.session_state[k]
             st.session_state.step = 1
