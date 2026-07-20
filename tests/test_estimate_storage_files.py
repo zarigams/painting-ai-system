@@ -338,3 +338,353 @@ def test_no_leftover_tmp_files_after_success():
     files_dir = es._estimate_files_dir("nikko", eid)
     leftovers = list(files_dir.glob("*.tmp-*"))
     assert leftovers == []
+
+
+# ═════════════════════════════════════════════════════════════════
+# A3-0b-2: canvas_states 検証・正規化・保存の検証
+# ═════════════════════════════════════════════════════════════════
+
+def _valid_canvas_states() -> dict:
+    return {
+        "abc123:p1": {
+            "page_key": "abc123:p1",
+            "viewport_transform": [1, 0, 0, 1, 0, 0],
+            "objects": [
+                {
+                    "type": "line",
+                    "orig_x1": 1,
+                    "orig_y1": 2,
+                    "orig_x2": 3,
+                    "orig_y2": 4,
+                    "length_px": 2.8284271247461903,
+                },
+            ],
+        },
+        "abc123:p2": {
+            "page_key": "abc123:p2",
+            "viewport_transform": [1.5, 0, 0, 1.5, 10, 20],
+            "objects": [],
+        },
+    }
+
+
+# ── 14. 正常系：canvas_statesがJSONへそのまま保存される ────────
+def test_save_estimate_stores_canvas_states_matching_input():
+    cs = _valid_canvas_states()
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        canvas_states=cs,
+    )
+    saved = es.load_estimate("nikko", eid)
+    assert saved["canvas_states"]["abc123:p1"]["objects"][0]["orig_x1"] == 1.0
+    assert saved["canvas_states"]["abc123:p1"]["viewport_transform"] == [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+    assert saved["canvas_states"]["abc123:p2"]["objects"] == []
+    assert set(saved["canvas_states"].keys()) == {"abc123:p1", "abc123:p2"}
+
+
+# ── 15. canvas_states未指定時：JSON内はnullではなく空dict ──────
+def test_save_estimate_defaults_canvas_states_to_empty_dict_when_not_provided():
+    eid = es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION)
+    saved = es.load_estimate("nikko", eid)
+    assert saved["canvas_states"] == {}
+
+
+# ── 16. 数値はfloatへ正規化される ───────────────────────────────
+def test_save_estimate_canvas_states_normalizes_ints_to_float():
+    normalized = es._validate_and_normalize_canvas_states(_valid_canvas_states())
+    page = normalized["abc123:p1"]
+    assert all(isinstance(v, float) for v in page["viewport_transform"])
+    obj = page["objects"][0]
+    for key in ("orig_x1", "orig_y1", "orig_x2", "orig_y2", "length_px"):
+        assert isinstance(obj[key], float)
+
+
+# ── 17. 入力dictを直接変更しないこと ────────────────────────────
+def test_validate_and_normalize_canvas_states_does_not_mutate_input():
+    cs = _valid_canvas_states()
+    import copy
+    cs_copy = copy.deepcopy(cs)
+    es._validate_and_normalize_canvas_states(cs)
+    assert cs == cs_copy
+
+
+def test_save_estimate_does_not_mutate_input_canvas_states_dict():
+    cs = _valid_canvas_states()
+    import copy
+    cs_copy = copy.deepcopy(cs)
+    es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION, canvas_states=cs)
+    assert cs == cs_copy
+
+
+# ── 18. 単体：空dict・複数ページを正常に受理 ────────────────────
+def test_validate_and_normalize_canvas_states_accepts_empty_dict():
+    assert es._validate_and_normalize_canvas_states({}) == {}
+
+
+def test_validate_and_normalize_canvas_states_accepts_multiple_pages_and_objects():
+    cs = _valid_canvas_states()
+    normalized = es._validate_and_normalize_canvas_states(cs)
+    assert len(normalized) == 2
+    assert normalized["abc123:p1"]["page_key"] == "abc123:p1"
+
+
+# ── 19. 異常系：トップレベル・page_key・valueの型 ───────────────
+@pytest.mark.parametrize("bad_value", [[], "not a dict", 123, None])
+def test_validate_and_normalize_canvas_states_rejects_non_dict_top_level(bad_value):
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states(bad_value)
+
+
+def test_validate_and_normalize_canvas_states_rejects_non_string_page_key():
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({123: {"page_key": "abc", "viewport_transform": [1, 0, 0, 1, 0, 0], "objects": []}})
+
+
+def test_validate_and_normalize_canvas_states_rejects_empty_string_page_key():
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({"": {"page_key": "", "viewport_transform": [1, 0, 0, 1, 0, 0], "objects": []}})
+
+
+def test_validate_and_normalize_canvas_states_rejects_non_dict_value():
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({"p1": ["not", "a", "dict"]})
+
+
+def test_validate_and_normalize_canvas_states_rejects_mismatched_inner_page_key():
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({
+            "p1": {"page_key": "p2", "viewport_transform": [1, 0, 0, 1, 0, 0], "objects": []},
+        })
+
+
+def test_validate_and_normalize_canvas_states_rejects_missing_inner_page_key():
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({
+            "p1": {"viewport_transform": [1, 0, 0, 1, 0, 0], "objects": []},
+        })
+
+
+# ── 20. 異常系：ページvalueの未知キー（部分破棄はしない） ──────
+def test_validate_and_normalize_canvas_states_rejects_unknown_page_key_field():
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({
+            "p1": {
+                "page_key": "p1",
+                "viewport_transform": [1, 0, 0, 1, 0, 0],
+                "objects": [],
+                "unexpected_field": "value",
+            },
+        })
+
+
+def test_validate_and_normalize_canvas_states_rejects_unknown_page_key_field_with_bytes_value():
+    """未知キーの値がbytesであっても黙って削除せずValueErrorにする。"""
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({
+            "p1": {
+                "page_key": "p1",
+                "viewport_transform": [1, 0, 0, 1, 0, 0],
+                "objects": [],
+                "raw_bytes": b"should not be silently dropped",
+            },
+        })
+
+
+def test_validate_and_normalize_canvas_states_rejects_mixed_type_unknown_page_keys_without_typeerror():
+    """未知キーにstrとintが混在していても、エラーメッセージ組み立て中にTypeErrorを起こさず
+    ValueErrorとして拒否できること（sorted()でのキー同士の直接比較を避けている確認）。"""
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({
+            "p1": {
+                "page_key": "p1",
+                "viewport_transform": [1, 0, 0, 1, 0, 0],
+                "objects": [],
+                "unexpected_field": "value",
+                42: "int key value",
+            },
+        })
+
+
+def test_validate_and_normalize_canvas_states_rejects_int_only_unknown_page_key():
+    """未知キーが整数キーのみの場合もValueErrorになること。"""
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({
+            "p1": {
+                "page_key": "p1",
+                "viewport_transform": [1, 0, 0, 1, 0, 0],
+                "objects": [],
+                99: "int only unknown key",
+            },
+        })
+
+
+# ── 21. 異常系：viewport_transform ───────────────────────────────
+@pytest.mark.parametrize("bad_vt", [
+    [1, 0, 0, 1, 0],            # 長さ5
+    [1, 0, 0, 1, 0, 0, 0],      # 長さ7
+    "not a list",
+    None,
+])
+def test_validate_and_normalize_canvas_states_rejects_viewport_transform_wrong_shape(bad_vt):
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({
+            "p1": {"page_key": "p1", "viewport_transform": bad_vt, "objects": []},
+        })
+
+
+@pytest.mark.parametrize("bad_element", [float("nan"), float("inf"), float("-inf")])
+def test_validate_and_normalize_canvas_states_rejects_viewport_transform_non_finite(bad_element):
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({
+            "p1": {"page_key": "p1", "viewport_transform": [bad_element, 0, 0, 1, 0, 0], "objects": []},
+        })
+
+
+def test_validate_and_normalize_canvas_states_rejects_viewport_transform_bool_element():
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({
+            "p1": {"page_key": "p1", "viewport_transform": [True, 0, 0, 1, 0, 0], "objects": []},
+        })
+
+
+# ── 22. 異常系：objects / 各object ───────────────────────────────
+def test_validate_and_normalize_canvas_states_rejects_objects_not_list():
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({
+            "p1": {"page_key": "p1", "viewport_transform": [1, 0, 0, 1, 0, 0], "objects": "not a list"},
+        })
+
+
+def test_validate_and_normalize_canvas_states_rejects_object_not_dict():
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({
+            "p1": {"page_key": "p1", "viewport_transform": [1, 0, 0, 1, 0, 0], "objects": ["not a dict"]},
+        })
+
+
+def test_validate_and_normalize_canvas_states_rejects_object_type_not_line():
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({
+            "p1": {
+                "page_key": "p1",
+                "viewport_transform": [1, 0, 0, 1, 0, 0],
+                "objects": [{"type": "polygon", "orig_x1": 0, "orig_y1": 0, "orig_x2": 1, "orig_y2": 1, "length_px": 1.0}],
+            },
+        })
+
+
+@pytest.mark.parametrize("missing_key", ["orig_x1", "orig_y1", "orig_x2", "orig_y2", "length_px"])
+def test_validate_and_normalize_canvas_states_rejects_object_missing_numeric_field(missing_key):
+    obj = {"type": "line", "orig_x1": 0, "orig_y1": 0, "orig_x2": 1, "orig_y2": 1, "length_px": 1.0}
+    del obj[missing_key]
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({
+            "p1": {"page_key": "p1", "viewport_transform": [1, 0, 0, 1, 0, 0], "objects": [obj]},
+        })
+
+
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf")])
+def test_validate_and_normalize_canvas_states_rejects_object_non_finite_numeric_field(bad_value):
+    obj = {"type": "line", "orig_x1": bad_value, "orig_y1": 0, "orig_x2": 1, "orig_y2": 1, "length_px": 1.0}
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({
+            "p1": {"page_key": "p1", "viewport_transform": [1, 0, 0, 1, 0, 0], "objects": [obj]},
+        })
+
+
+def test_validate_and_normalize_canvas_states_rejects_object_bool_numeric_field():
+    obj = {"type": "line", "orig_x1": True, "orig_y1": 0, "orig_x2": 1, "orig_y2": 1, "length_px": 1.0}
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({
+            "p1": {"page_key": "p1", "viewport_transform": [1, 0, 0, 1, 0, 0], "objects": [obj]},
+        })
+
+
+# ── 23. 異常系：line objectの未知キー（部分破棄はしない） ──────
+def test_validate_and_normalize_canvas_states_rejects_unknown_object_field():
+    obj = {
+        "type": "line", "orig_x1": 0, "orig_y1": 0, "orig_x2": 1, "orig_y2": 1, "length_px": 1.0,
+        "color": "red",
+    }
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({
+            "p1": {"page_key": "p1", "viewport_transform": [1, 0, 0, 1, 0, 0], "objects": [obj]},
+        })
+
+
+def test_validate_and_normalize_canvas_states_rejects_unknown_object_field_with_bytes_value():
+    """line objectの未知キーの値がbytesであっても黙って削除せずValueErrorにする。"""
+    obj = {
+        "type": "line", "orig_x1": 0, "orig_y1": 0, "orig_x2": 1, "orig_y2": 1, "length_px": 1.0,
+        "raw_bytes": b"should not be silently dropped",
+    }
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({
+            "p1": {"page_key": "p1", "viewport_transform": [1, 0, 0, 1, 0, 0], "objects": [obj]},
+        })
+
+
+def test_validate_and_normalize_canvas_states_rejects_mixed_type_unknown_object_keys_without_typeerror():
+    """line objectの未知キーにstrとintが混在していても、エラーメッセージ組み立て中に
+    TypeErrorを起こさずValueErrorとして拒否できること。"""
+    obj = {
+        "type": "line", "orig_x1": 0, "orig_y1": 0, "orig_x2": 1, "orig_y2": 1, "length_px": 1.0,
+        "color": "red",
+        7: "int key value",
+    }
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states({
+            "p1": {"page_key": "p1", "viewport_transform": [1, 0, 0, 1, 0, 0], "objects": [obj]},
+        })
+
+
+# ── 24. 統合：save_estimate()経由でも不正canvas_statesはValueError＋残骸なし ──
+def test_save_estimate_raises_valueerror_and_leaves_no_residue_when_canvas_states_invalid():
+    bad_cs = {"p1": {"page_key": "p1", "viewport_transform": "not a list", "objects": []}}
+    with pytest.raises(ValueError):
+        es.save_estimate(
+            "nikko", PROJECT, QUANTITIES, ESTIMATION,
+            drawing_materials={"pdf": _pdf_bytes(), "photos": [_png_bytes()]},
+            canvas_states=bad_cs,
+        )
+    assert list((es._ESTIMATES_DIR / "nikko").glob("*.json")) == []
+    nikko_files_root = es._ESTIMATE_FILES_DIR / "nikko"
+    if nikko_files_root.exists():
+        assert list(nikko_files_root.iterdir()) == []
+
+
+def test_save_estimate_raises_valueerror_and_leaves_no_residue_when_canvas_states_has_unknown_key():
+    """未知のキーを含むcanvas_statesを渡した場合も、JSON・案件ファイルディレクトリの両方が残らないこと。"""
+    bad_cs = {
+        "p1": {
+            "page_key": "p1",
+            "viewport_transform": [1, 0, 0, 1, 0, 0],
+            "objects": [],
+            "unexpected_field": "value",
+        },
+    }
+    with pytest.raises(ValueError):
+        es.save_estimate(
+            "nikko", PROJECT, QUANTITIES, ESTIMATION,
+            drawing_materials={"pdf": _pdf_bytes(), "photos": [_png_bytes()]},
+            canvas_states=bad_cs,
+        )
+    assert list((es._ESTIMATES_DIR / "nikko").glob("*.json")) == []
+    nikko_files_root = es._ESTIMATE_FILES_DIR / "nikko"
+    if nikko_files_root.exists():
+        assert list(nikko_files_root.iterdir()) == []
+
+
+# ── 25. 後方互換：canvas_statesキーの無い既存JSONもload_estimate()で読める ──
+def test_load_estimate_existing_json_without_canvas_states_key_still_loads():
+    eid = es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION)
+    json_path = es._ESTIMATES_DIR / "nikko" / f"{eid}.json"
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert "canvas_states" in data
+    del data["canvas_states"]  # 既存（A3-0b-2以前）形式を再現
+    json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    loaded = es.load_estimate("nikko", eid)
+    assert loaded is not None
+    assert "canvas_states" not in loaded  # {}を補完する変更はまだ行わない（A3-0b-3の対象）
+    assert loaded["id"] == eid

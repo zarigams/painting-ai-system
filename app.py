@@ -3125,7 +3125,8 @@ elif st.session_state.step == 5:
         st.info(f"💾 保存済み（ID: {st.session_state[_saved_key]}）")
     if st.button("💾 この見積りを案件履歴に保存", use_container_width=True, key="save_estimate_btn"):
         # A3-0b-1: 図面等の実体ファイルはこの保存タイミングでのみ永続化する
-        # （canvas_statesはA3-0b-2の対象のため、ここでは扱わない）
+        # A3-0b-2: canvas_states（手動計測キャンバスの状態）も同じタイミングでJSON内へ保存する
+        #          （読込・session_stateへの復元はA3-0b-3の対象のため、ここでは扱わない）
         _drawing_materials = {
             "pdf":               st.session_state.get("pdf_bytes"),
             "floor_plan":        st.session_state.get("floor_plan_bytes"),
@@ -3143,6 +3144,7 @@ elif st.session_state.step == 5:
                 estimation=st.session_state.get("estimation", {}),
                 estimation_sheet_data=st.session_state.get("estimation_sheet_data"),
                 drawing_materials=_drawing_materials,
+                canvas_states=st.session_state.get("canvas_states") or {},
             )
             st.session_state[_saved_key] = _eid
             st.success(f"✅ 案件を保存しました")

@@ -2,10 +2,12 @@
 案件保存・履歴管理モジュール
 data/estimates/{company_id}/ 以下にJSONで保存する
 data/estimate_files/{company_id}/{estimate_id}/ 以下に図面等の実体ファイルを保存する（A3-0b-1）
+canvas_states（Fabric.js手動計測キャンバスの状態）はJSON内の"canvas_states"キーへ保存する（A3-0b-2、保存側のみ）
 """
 from __future__ import annotations
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -233,12 +235,144 @@ def save_estimate_files(company_id: str, estimate_id: str, materials: dict) -> d
     return meta
 
 
+_CANVAS_PAGE_ALLOWED_KEYS = {"page_key", "viewport_transform", "objects"}
+_CANVAS_OBJECT_ALLOWED_KEYS = {"type", "orig_x1", "orig_y1", "orig_x2", "orig_y2", "length_px"}
+_CANVAS_OBJECT_NUMERIC_KEYS = ("orig_x1", "orig_y1", "orig_x2", "orig_y2", "length_px")
+
+
+def _sorted_key_reprs(keys) -> list[str]:
+    """
+    エラーメッセージ組み立て用：キー集合をrepr()した文字列へ変換してからソートする。
+    未知キーにstr・int等の異なる型が混在していても、元のキー同士を直接比較しない
+    （repr()後の文字列同士を比較する）ため、TypeErrorにならず必ずValueErrorを構築できる。
+    """
+    return sorted(repr(k) for k in keys)
+
+
+def _require_finite_number(value, label: str) -> float:
+    """bool ではない int/float かつ有限値であることを検証し、float へ正規化して返す。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"canvas_states: {label} が数値ではありません: {value!r}")
+    if not math.isfinite(value):
+        raise ValueError(f"canvas_states: {label} が有限数値ではありません: {value!r}")
+    return float(value)
+
+
+def _validate_and_normalize_canvas_states(canvas_states: dict) -> dict:
+    """
+    canvas_states 全体を検証し、新しいdictとして正規化して返す。
+    入力dict・その内部のdict/listは一切変更しない（ホワイトリスト方式で新規構築する）。
+
+    許可するキーは以下のみ。未知・余分なキーが1件でも存在する場合は、
+    黙って除外せず ValueError を送出して保存全体を失敗させる。
+      - 各ページ value: "page_key", "viewport_transform", "objects"
+      - 各 line object: "type", "orig_x1", "orig_y1", "orig_x2", "orig_y2", "length_px"
+
+    期待する形式:
+        {
+            page_key(str, 非空): {
+                "page_key": page_keyと同一のstr,
+                "viewport_transform": [float x6]（bool不可・有限値のみ）,
+                "objects": [
+                    {"type": "line",
+                     "orig_x1": float, "orig_y1": float,
+                     "orig_x2": float, "orig_y2": float,
+                     "length_px": float}（数値はいずれもbool不可・有限値のみ）,
+                    ...
+                ]
+            },
+            ...
+        }
+
+    不正な形式が見つかった場合は ValueError を送出する（部分的な正規化結果は返さない）。
+    """
+    if not isinstance(canvas_states, dict):
+        raise ValueError(f"canvas_states は dict である必要があります: {type(canvas_states)!r}")
+
+    normalized: dict = {}
+
+    for page_key, page_value in canvas_states.items():
+        if not isinstance(page_key, str) or page_key == "":
+            raise ValueError(f"canvas_states: 不正なpage_keyです: {page_key!r}")
+
+        if not isinstance(page_value, dict):
+            raise ValueError(
+                f"canvas_states[{page_key!r}] は dict である必要があります: {type(page_value)!r}"
+            )
+
+        unknown_page_keys = set(page_value.keys()) - _CANVAS_PAGE_ALLOWED_KEYS
+        if unknown_page_keys:
+            raise ValueError(
+                f"canvas_states[{page_key!r}] に未知のキーがあります: "
+                f"{_sorted_key_reprs(unknown_page_keys)}"
+            )
+
+        inner_page_key = page_value.get("page_key")
+        if not isinstance(inner_page_key, str) or inner_page_key != page_key:
+            raise ValueError(
+                f"canvas_states[{page_key!r}] の内部page_keyが外側のキーと一致しません: "
+                f"{inner_page_key!r}"
+            )
+
+        raw_vt = page_value.get("viewport_transform")
+        if not isinstance(raw_vt, list) or len(raw_vt) != 6:
+            raise ValueError(
+                f"canvas_states[{page_key!r}].viewport_transform は長さ6のlistである必要があります: "
+                f"{raw_vt!r}"
+            )
+        normalized_vt = [
+            _require_finite_number(v, f"canvas_states[{page_key!r}].viewport_transform[{i}]")
+            for i, v in enumerate(raw_vt)
+        ]
+
+        raw_objects = page_value.get("objects")
+        if not isinstance(raw_objects, list):
+            raise ValueError(
+                f"canvas_states[{page_key!r}].objects は list である必要があります: {raw_objects!r}"
+            )
+
+        normalized_objects = []
+        for obj_idx, obj in enumerate(raw_objects):
+            obj_label = f"canvas_states[{page_key!r}].objects[{obj_idx}]"
+            if not isinstance(obj, dict):
+                raise ValueError(f"{obj_label} は dict である必要があります: {type(obj)!r}")
+
+            unknown_obj_keys = set(obj.keys()) - _CANVAS_OBJECT_ALLOWED_KEYS
+            if unknown_obj_keys:
+                raise ValueError(
+                    f"{obj_label} に未知のキーがあります: {_sorted_key_reprs(unknown_obj_keys)}"
+                )
+
+            if obj.get("type") != "line":
+                raise ValueError(f"{obj_label}.type は 'line' である必要があります: {obj.get('type')!r}")
+
+            normalized_obj = {"type": "line"}
+            for numeric_key in _CANVAS_OBJECT_NUMERIC_KEYS:
+                if numeric_key not in obj:
+                    raise ValueError(f"{obj_label} に必須キー {numeric_key!r} がありません")
+                normalized_obj[numeric_key] = _require_finite_number(
+                    obj[numeric_key], f"{obj_label}.{numeric_key}"
+                )
+            normalized_objects.append(normalized_obj)
+
+        normalized[page_key] = {
+            "page_key": page_key,
+            "viewport_transform": normalized_vt,
+            "objects": normalized_objects,
+        }
+
+    return normalized
+
+
 def save_estimate(company_id: str, project: dict, quantities: dict,
                   estimation: dict, estimation_sheet_data: dict | None = None,
-                  drawing_materials: dict | None = None) -> str:
+                  drawing_materials: dict | None = None,
+                  canvas_states: dict | None = None) -> str:
     """
     見積りデータをJSONに保存する。drawing_materials が渡された場合は図面等の実体ファイルも
     data/estimate_files/{company_id}/{estimate_id}/ へ保存する。
+    canvas_states が渡された場合は検証・正規化のうえJSON内へそのまま保存する（A3-0b-2）。
+    未指定時は null ではなく空dict {} を保存する。
 
     A3-0b-1では新規保存のみを対象とする：
       - estimate_id は毎回新規発行（上書きは行わない）
@@ -247,6 +381,11 @@ def save_estimate(company_id: str, project: dict, quantities: dict,
       - ファイル保存・メタデータ生成・JSON生成・JSON書き込みのいずれかで失敗した場合は、
         「この呼び出しが新規作成した」estimate_files/{company_id}/{estimate_id}/ と
         JSONファイルのみを削除し、例外を再送出する
+
+    A3-0b-2ではcanvas_statesについても同じcleanup方針を適用する：
+      - canvas_states が不正な形式（未知のキーを含む場合も含む）の場合は ValueError を送出し、
+        drawing_materials により既に書き込まれたファイルがあれば同じcleanup経路で削除する
+      - 保存側のみを対象とし、読込・session_stateへの復元（A3-0b-3）は行わない
 
     Returns: estimate_id (str)
     """
@@ -268,6 +407,12 @@ def save_estimate(company_id: str, project: dict, quantities: dict,
         if drawing_materials:
             files_meta = save_estimate_files(company_id, estimate_id, drawing_materials)
 
+        # canvas_states の検証・正規化はファイル保存の後、JSON組み立て・書き込みの前に行う。
+        # drawing_materialsにより既にファイルが書き込まれた後で不正が発覚した場合でも、
+        # 以下のexceptブロック（A3-0b-1実装済み・変更なし）がfiles_dirを正しく削除する。
+        _canvas_states_input = canvas_states if canvas_states is not None else {}
+        normalized_canvas_states = _validate_and_normalize_canvas_states(_canvas_states_input)
+
         data = {
             "id":                    estimate_id,
             "created_at":            created_at,
@@ -277,6 +422,7 @@ def save_estimate(company_id: str, project: dict, quantities: dict,
             "estimation":            estimation,
             "estimation_sheet_data": estimation_sheet_data,
             "files":                 files_meta,
+            "canvas_states":         normalized_canvas_states,
         }
         json_text = json.dumps(data, ensure_ascii=False, indent=2)
         json_path.write_text(json_text, encoding="utf-8")
