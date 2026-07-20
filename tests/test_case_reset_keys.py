@@ -31,6 +31,11 @@ EXPECTED_NEW_KEYS = {
     "_voice_gpt_raw", "_3d_gpt_raw", "_3d_trace_png",
 }
 
+# A3-0b-1で新規追加されたキー（STEP3追加図面のsession_stateコピー）
+EXPECTED_A3_0B_1_KEYS = {
+    "step3_drawing_files",
+}
+
 
 def _get_case_reset_keys():
     """モジュールレベルの `CASE_RESET_KEYS = [...]` 代入から文字列リストを抽出する"""
@@ -76,10 +81,11 @@ def _button_blocks():
     return blocks
 
 
-def test_case_reset_keys_defined_with_27_keys():
-    """CASE_RESET_KEYS が定義されており、重複なく27キーであること"""
+def test_case_reset_keys_defined_with_28_keys():
+    """CASE_RESET_KEYS が定義されており、重複なく28キーであること
+    （27キー＝A3-0a時点 + step3_drawing_files＝A3-0b-1で追加）"""
     keys = _get_case_reset_keys()
-    assert len(keys) == 27, f"CASE_RESET_KEYS は27キーである想定ですが {len(keys)} 件でした: {keys}"
+    assert len(keys) == 28, f"CASE_RESET_KEYS は28キーである想定ですが {len(keys)} 件でした: {keys}"
     assert len(set(keys)) == len(keys), "CASE_RESET_KEYS に重複キーがあります"
 
 
@@ -96,6 +102,16 @@ def test_case_reset_keys_includes_previously_missing_keys():
     keys = set(_get_case_reset_keys())
     missing = EXPECTED_NEW_KEYS - keys
     assert not missing, f"CASE_RESET_KEYS に含まれるべきキーが不足しています: {missing}"
+
+
+def test_case_reset_keys_includes_a3_0b_1_step3_drawing_files():
+    """A3-0b-1で追加したSTEP3追加図面のsession_stateキーがリセット対象に含まれること
+    （current_case_idはA3-0b-1では追加しない）"""
+    keys = set(_get_case_reset_keys())
+    missing = EXPECTED_A3_0B_1_KEYS - keys
+    assert not missing, f"CASE_RESET_KEYS に含まれるべきキーが不足しています: {missing}"
+    assert "current_case_id" not in keys, \
+        "current_case_id はA3-0b-3で追加する想定であり、A3-0b-1時点では含まれてはいけません"
 
 
 def test_sidebar_reset_button_uses_shared_constant():
@@ -118,3 +134,22 @@ def test_step5_new_case_button_uses_shared_constant():
         if isinstance(n, ast.For) and isinstance(n.iter, ast.Name) and n.iter.id == "CASE_RESET_KEYS"
     ]
     assert loops, "「新しい案件を作成」ブロック内に `for k in CASE_RESET_KEYS:` が見つかりません"
+
+
+def test_save_estimate_button_passes_drawing_materials_kwarg():
+    """STEP5「💾 この見積りを案件履歴に保存」が save_estimate() へ
+    drawing_materials キーワード引数を渡していること（A3-0b-1）"""
+    blocks = _button_blocks()
+    label = "💾 この見積りを案件履歴に保存"
+    assert label in blocks, "STEP5の保存ボタンが見つかりません"
+
+    calls = [
+        n for n in ast.walk(blocks[label])
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id in ("_save_est", "save_estimate")
+    ]
+    assert calls, "保存ボタンブロック内に save_estimate() 呼び出しが見つかりません"
+    kwarg_names = {kw.arg for call in calls for kw in call.keywords}
+    assert "drawing_materials" in kwarg_names, \
+        "save_estimate() 呼び出しに drawing_materials キーワード引数が渡されていません"
