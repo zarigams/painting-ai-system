@@ -260,6 +260,7 @@ DEFAULTS = {
         "_3d_gpt_raw": "",
         "_3d_trace_png": None,
     "theme":                 "スタンダード",
+    "step3_drawing_files":   [],
 }
 for _k, _v in DEFAULTS.items():
     if _k not in st.session_state:
@@ -281,6 +282,8 @@ CASE_RESET_KEYS = [
     "drawing_annotated_img", "drawing_annotations", "drawing_page1_raw",
     "canvas_states", "drawing_page_selector", "drawing_upload_step3",
     "_voice_gpt_raw", "_3d_gpt_raw", "_3d_trace_png",
+    # A3-0b-1で追加（STEP3追加図面のsession_stateコピー。current_case_idは未導入）
+    "step3_drawing_files",
 ]
 
 # ─────────────────────────────────────────────────────────────
@@ -2720,6 +2723,16 @@ elif st.session_state.step == 3:
     ]
     all_sources = step1_sources + additional_sources
 
+    # ── STEP3追加図面をsession_stateへコピー（A3-0b-1） ─────────
+    # ウィジェット（drawing_upload_step3）の状態そのものに依存せず、
+    # STEP3表示のたびに現在の添付内容をミラーリングしておく。
+    # これによりSTEP5（保存ボタン）到達時にも、STEP3で最後に表示された
+    # 添付内容を参照できる。
+    st.session_state["step3_drawing_files"] = [
+        {"filename": f.name, "bytes": f.getvalue()}
+        for f in (additional_files or [])
+    ]
+
     pages, load_errors = load_drawing_pages_with_errors(all_sources)
 
     for err in load_errors:
@@ -3111,15 +3124,31 @@ elif st.session_state.step == 5:
     if st.session_state.get(_saved_key):
         st.info(f"💾 保存済み（ID: {st.session_state[_saved_key]}）")
     if st.button("💾 この見積りを案件履歴に保存", use_container_width=True, key="save_estimate_btn"):
-        _eid = _save_est(
-            company_id=st.session_state.company_id,
-            project=st.session_state.get("project", {}),
-            quantities=st.session_state.get("quantities", {}),
-            estimation=st.session_state.get("estimation", {}),
-            estimation_sheet_data=st.session_state.get("estimation_sheet_data"),
-        )
-        st.session_state[_saved_key] = _eid
-        st.success(f"✅ 案件を保存しました")
+        # A3-0b-1: 図面等の実体ファイルはこの保存タイミングでのみ永続化する
+        # （canvas_statesはA3-0b-2の対象のため、ここでは扱わない）
+        _drawing_materials = {
+            "pdf":               st.session_state.get("pdf_bytes"),
+            "floor_plan":        st.session_state.get("floor_plan_bytes"),
+            "photos":            st.session_state.get("photo_bytes_list") or [],
+            "drawing_annotated": st.session_state.get("drawing_annotated_img"),
+            "drawing_page1_raw": st.session_state.get("drawing_page1_raw"),
+            "trace_3d":          st.session_state.get("_3d_trace_png"),
+            "step3_drawings":    st.session_state.get("step3_drawing_files") or [],
+        }
+        try:
+            _eid = _save_est(
+                company_id=st.session_state.company_id,
+                project=st.session_state.get("project", {}),
+                quantities=st.session_state.get("quantities", {}),
+                estimation=st.session_state.get("estimation", {}),
+                estimation_sheet_data=st.session_state.get("estimation_sheet_data"),
+                drawing_materials=_drawing_materials,
+            )
+            st.session_state[_saved_key] = _eid
+            st.success(f"✅ 案件を保存しました")
+        except Exception as e:
+            log_error("案件保存エラー", e, "FILE")
+            st.error("保存に失敗しました。もう一度お試しください。")
 
     # ── アクションボタン ─────────────────────────────────────
     st.markdown("---")

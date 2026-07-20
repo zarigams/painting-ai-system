@@ -29,5 +29,9 @@ Thumbs.db
 # 実行時ログ（JSONLファイル）
 data/logs/
 
+# 保存済み案件（顧客の見積りJSON・図面等の実体ファイル）
+data/estimates/
+data/estimate_files/
+
 # 一時ファイル
 *.tmp
