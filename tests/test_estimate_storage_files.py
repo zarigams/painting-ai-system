@@ -688,3 +688,662 @@ def test_load_estimate_existing_json_without_canvas_states_key_still_loads():
     assert loaded is not None
     assert "canvas_states" not in loaded  # {}を補完する変更はまだ行わない（A3-0b-3の対象）
     assert loaded["id"] == eid
+
+
+# ═════════════════════════════════════════════════════════════════
+# A3-0b-3-1: saved_step等の保存 / update_estimate() / load_estimate_file()
+# ═════════════════════════════════════════════════════════════════
+
+def _flaky_replace(monkeypatch, module, should_fail):
+    """
+    os.replace() をパターンマッチで選択的に失敗させるヘルパー。
+
+    should_fail(src_name: str, dst_name: str) -> bool を満たす呼び出しのみ失敗させる。
+    _atomic_write_bytes() 内部の一時ファイル名は ".tmp-<uuid>" 接尾辞（".newtmp-"は含まない）
+    のため、update_estimate() 自身のswap/backup操作（".newtmp-" / ".bak-"接尾辞）とは
+    名前で明確に区別できる。呼び出し回数のカウントには依存しない。
+    """
+    original_replace = module.os.replace
+
+    def _fake(src, dst):
+        src_name = Path(src).name
+        dst_name = Path(dst).name
+        if should_fail(src_name, dst_name):
+            raise OSError(f"simulated os.replace failure: {src_name} -> {dst_name}")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(module.os, "replace", _fake)
+
+
+PROJECT2 = {"client_name": "テスト次郎", "site_address": "東京都テスト区9-9-9"}
+QUANTITIES2 = {"wall_area": 200.0}
+ESTIMATION2 = {"total": 654321}
+
+
+# ── 26. save_estimate(): saved_step等5項目の保存 ────────────────
+def test_save_estimate_stores_saved_step_and_extra_fields():
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        saved_step=3,
+        drawing_data={"lines": [1, 2, 3]},
+        image_data={"width": 100, "height": 200},
+        drawing_scale="1:100",
+        original_paper="A3",
+    )
+    saved = es.load_estimate("nikko", eid)
+    assert saved["saved_step"] == 3
+    assert saved["drawing_data"] == {"lines": [1, 2, 3]}
+    assert saved["image_data"] == {"width": 100, "height": 200}
+    assert saved["drawing_scale"] == "1:100"
+    assert saved["original_paper"] == "A3"
+
+
+def test_save_estimate_defaults_saved_step_and_extra_fields_to_null_when_not_provided():
+    eid = es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION)
+    saved = es.load_estimate("nikko", eid)
+    assert saved["saved_step"] is None
+    assert saved["drawing_data"] is None
+    assert saved["image_data"] is None
+    assert saved["drawing_scale"] is None
+    assert saved["original_paper"] is None
+
+
+@pytest.mark.parametrize("step", [1, 2, 3, 4, 5])
+def test_save_estimate_accepts_saved_step_in_valid_range(step):
+    eid = es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION, saved_step=step)
+    saved = es.load_estimate("nikko", eid)
+    assert saved["saved_step"] == step
+
+
+@pytest.mark.parametrize("bad_step", [0, 6, -1, True, False, "3", 3.0, 3.5])
+def test_save_estimate_rejects_invalid_saved_step(bad_step):
+    with pytest.raises(ValueError):
+        es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION, saved_step=bad_step)
+
+
+def test_save_estimate_invalid_saved_step_leaves_no_residue():
+    with pytest.raises(ValueError):
+        es.save_estimate(
+            "nikko", PROJECT, QUANTITIES, ESTIMATION,
+            drawing_materials={"pdf": _pdf_bytes()},
+            saved_step=99,
+        )
+    assert list((es._ESTIMATES_DIR / "nikko").glob("*.json")) == []
+    nikko_files_root = es._ESTIMATE_FILES_DIR / "nikko"
+    if nikko_files_root.exists():
+        assert list(nikko_files_root.iterdir()) == []
+
+
+def test_validate_saved_step_directly_rejects_bool():
+    """boolはintのサブクラスであるため、明示的にbool除外を確認する。"""
+    with pytest.raises(ValueError):
+        es._validate_saved_step(True)
+
+
+# ── 27. update_estimate(): 正常系ラウンドトリップ ────────────────
+def test_update_estimate_roundtrip_updates_fields_and_preserves_id_and_created_at():
+    eid = es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION, saved_step=1)
+    original = es.load_estimate("nikko", eid)
+
+    es.update_estimate(
+        "nikko", eid, PROJECT2, QUANTITIES2, ESTIMATION2,
+        saved_step=4,
+    )
+    updated = es.load_estimate("nikko", eid)
+
+    assert updated["id"] == original["id"] == eid
+    assert updated["created_at"] == original["created_at"]
+    assert "updated_at" in updated and updated["updated_at"]
+    assert updated["project"] == PROJECT2
+    assert updated["quantities"] == QUANTITIES2
+    assert updated["estimation"] == ESTIMATION2
+    assert updated["saved_step"] == 4
+
+
+# ── 28. update_estimate(): JSONのみ（ファイル無し→無し） ────────
+def test_update_estimate_json_only_when_no_files_ever_existed():
+    eid = es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION)
+    files_dir = es._estimate_files_dir("nikko", eid)
+    assert not files_dir.exists()
+
+    es.update_estimate("nikko", eid, PROJECT2, QUANTITIES2, ESTIMATION2)
+
+    assert not files_dir.exists()
+    updated = es.load_estimate("nikko", eid)
+    assert updated["files"] == es._empty_files_meta()
+
+
+# ── 29. update_estimate(): 添付ファイルの差し替え ────────────────
+def test_update_estimate_replaces_attachments():
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        drawing_materials={"pdf": _pdf_bytes()},
+    )
+    files_dir = es._estimate_files_dir("nikko", eid)
+    old_pdf_path = files_dir / "drawing_source.pdf"
+    assert old_pdf_path.exists()
+
+    # 旧pdfと内容が異なることが分かるよう、_pdf_bytes()に追加バイトを付けたPDFを使う
+    new_pdf = _pdf_bytes() + b"\n%EXTRA-CONTENT-FOR-DIFF\n"
+    es.update_estimate(
+        "nikko", eid, PROJECT2, QUANTITIES2, ESTIMATION2,
+        drawing_materials={"floor_plan": new_pdf},
+    )
+
+    updated = es.load_estimate("nikko", eid)
+    assert updated["files"]["pdf"] is None
+    floor_plan_meta = updated["files"]["floor_plan"]
+    assert floor_plan_meta is not None
+
+    floor_plan_path = files_dir / "floor_plan.pdf"
+    assert not old_pdf_path.exists()
+    assert floor_plan_path.exists()
+    assert floor_plan_path.read_bytes() == new_pdf
+
+    assert floor_plan_meta["content_type"] == "application/pdf"
+    assert floor_plan_meta["size"] == len(new_pdf)
+    import hashlib
+    assert floor_plan_meta["sha256"] == hashlib.sha256(new_pdf).hexdigest()
+
+
+# ── 30. update_estimate(): 添付ファイルの全削除 ──────────────────
+def test_update_estimate_removes_all_attachments_when_materials_not_given():
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        drawing_materials={"pdf": _pdf_bytes()},
+    )
+    files_dir = es._estimate_files_dir("nikko", eid)
+    assert files_dir.exists()
+
+    es.update_estimate("nikko", eid, PROJECT2, QUANTITIES2, ESTIMATION2)
+
+    assert not files_dir.exists()
+    updated = es.load_estimate("nikko", eid)
+    assert updated["files"] == es._empty_files_meta()
+
+
+# ── 31. update_estimate(): 更新対象が存在しない ──────────────────
+def test_update_estimate_raises_filenotfounderror_when_target_missing():
+    with pytest.raises(FileNotFoundError):
+        es.update_estimate("nikko", "doesnotexist1", PROJECT2, QUANTITIES2, ESTIMATION2)
+
+
+# ── 32. update_estimate(): Phase1（一時領域作成）失敗→既存データ無変更 ──
+def test_update_estimate_invalid_saved_step_leaves_existing_data_untouched():
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        drawing_materials={"pdf": _pdf_bytes()}, saved_step=1,
+    )
+    files_dir = es._estimate_files_dir("nikko", eid)
+    json_path = es._ESTIMATES_DIR / "nikko" / f"{eid}.json"
+    original_json_text = json_path.read_text(encoding="utf-8")
+    original_pdf = (files_dir / "drawing_source.pdf").read_bytes()
+
+    with pytest.raises(ValueError):
+        es.update_estimate(
+            "nikko", eid, PROJECT2, QUANTITIES2, ESTIMATION2,
+            drawing_materials={"floor_plan": _pdf_bytes()},
+            saved_step=999,
+        )
+
+    assert json_path.read_text(encoding="utf-8") == original_json_text
+    assert (files_dir / "drawing_source.pdf").read_bytes() == original_pdf
+    # 一時領域の残骸が残っていないこと
+    leftovers = list(files_dir.parent.glob(f"{eid}.newtmp-*")) if files_dir.parent.exists() else []
+    assert leftovers == []
+    leftover_json = list(json_path.parent.glob(f"{eid}.json.newtmp-*"))
+    assert leftover_json == []
+
+
+def test_update_estimate_atomic_write_failure_leaves_existing_data_untouched(monkeypatch):
+    """drawing_materials書込中の失敗（_atomic_write_bytesレベル）でも既存データが無変更のこと。"""
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        drawing_materials={"pdf": _pdf_bytes()},
+    )
+    files_dir = es._estimate_files_dir("nikko", eid)
+    json_path = es._ESTIMATES_DIR / "nikko" / f"{eid}.json"
+    original_json_text = json_path.read_text(encoding="utf-8")
+    original_pdf = (files_dir / "drawing_source.pdf").read_bytes()
+
+    def _always_fail(path, data):
+        raise IOError("simulated disk failure during update")
+
+    monkeypatch.setattr(es, "_atomic_write_bytes", _always_fail)
+
+    with pytest.raises(IOError):
+        es.update_estimate(
+            "nikko", eid, PROJECT2, QUANTITIES2, ESTIMATION2,
+            drawing_materials={"floor_plan": _pdf_bytes()},
+        )
+
+    assert json_path.read_text(encoding="utf-8") == original_json_text
+    assert (files_dir / "drawing_source.pdf").read_bytes() == original_pdf
+    leftover_tmp_dirs = list(files_dir.parent.glob(f"{eid}.newtmp-*"))
+    assert leftover_tmp_dirs == []
+
+
+# ── 33. update_estimate(): Phase2（ファイルswap）失敗→rollbackで既存復元 ──
+def test_update_estimate_rollback_when_files_swap_fails_restores_existing_data(monkeypatch):
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        drawing_materials={"pdf": _pdf_bytes()}, saved_step=1,
+    )
+    files_dir = es._estimate_files_dir("nikko", eid)
+    json_path = es._ESTIMATES_DIR / "nikko" / f"{eid}.json"
+    original_json_text = json_path.read_text(encoding="utf-8")
+    original_pdf = (files_dir / "drawing_source.pdf").read_bytes()
+
+    def _fail_files_swap(src_name, dst_name):
+        return ".newtmp-" in src_name and not dst_name.endswith(".json")
+
+    _flaky_replace(monkeypatch, es, _fail_files_swap)
+
+    with pytest.raises(OSError):
+        es.update_estimate(
+            "nikko", eid, PROJECT2, QUANTITIES2, ESTIMATION2,
+            drawing_materials={"floor_plan": _pdf_bytes()}, saved_step=4,
+        )
+
+    # 既存データが完全に復元されていること
+    assert json_path.exists()
+    assert json_path.read_text(encoding="utf-8") == original_json_text
+    assert files_dir.exists()
+    assert (files_dir / "drawing_source.pdf").read_bytes() == original_pdf
+
+    # 一時・バックアップの残骸が残っていないこと
+    assert list(json_path.parent.glob(f"{eid}.json.newtmp-*")) == []
+    assert list(json_path.parent.glob(f"{eid}.json.bak-*")) == []
+    assert list(files_dir.parent.glob(f"{eid}.newtmp-*")) == []
+    assert list(files_dir.parent.glob(f"{eid}.bak-*")) == []
+
+
+# ── 34. update_estimate(): Phase2（JSON swap）失敗→rollbackで既存復元 ──
+def test_update_estimate_rollback_when_json_swap_fails_restores_existing_data(monkeypatch):
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        drawing_materials={"pdf": _pdf_bytes()}, saved_step=1,
+    )
+    files_dir = es._estimate_files_dir("nikko", eid)
+    json_path = es._ESTIMATES_DIR / "nikko" / f"{eid}.json"
+    original_json_text = json_path.read_text(encoding="utf-8")
+    original_pdf = (files_dir / "drawing_source.pdf").read_bytes()
+
+    def _fail_json_swap(src_name, dst_name):
+        return ".newtmp-" in src_name and dst_name.endswith(".json")
+
+    _flaky_replace(monkeypatch, es, _fail_json_swap)
+
+    with pytest.raises(OSError):
+        es.update_estimate(
+            "nikko", eid, PROJECT2, QUANTITIES2, ESTIMATION2,
+            drawing_materials={"floor_plan": _pdf_bytes()}, saved_step=4,
+        )
+
+    assert json_path.exists()
+    assert json_path.read_text(encoding="utf-8") == original_json_text
+    assert files_dir.exists()
+    assert (files_dir / "drawing_source.pdf").read_bytes() == original_pdf
+
+    assert list(json_path.parent.glob(f"{eid}.json.newtmp-*")) == []
+    assert list(json_path.parent.glob(f"{eid}.json.bak-*")) == []
+    assert list(files_dir.parent.glob(f"{eid}.newtmp-*")) == []
+    assert list(files_dir.parent.glob(f"{eid}.bak-*")) == []
+
+
+# ── 35. update_estimate(): JSONのみの案件でもjson swap失敗→rollback ──
+def test_update_estimate_rollback_when_json_swap_fails_for_json_only_estimate(monkeypatch):
+    """ファイルディレクトリが元々存在しない案件でも、JSON swap失敗時に正しくrollbackできること。"""
+    eid = es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION)
+    json_path = es._ESTIMATES_DIR / "nikko" / f"{eid}.json"
+    original_json_text = json_path.read_text(encoding="utf-8")
+
+    def _fail_json_swap(src_name, dst_name):
+        return ".newtmp-" in src_name and dst_name.endswith(".json")
+
+    _flaky_replace(monkeypatch, es, _fail_json_swap)
+
+    with pytest.raises(OSError):
+        es.update_estimate("nikko", eid, PROJECT2, QUANTITIES2, ESTIMATION2)
+
+    assert json_path.exists()
+    assert json_path.read_text(encoding="utf-8") == original_json_text
+    files_dir = es._estimate_files_dir("nikko", eid)
+    assert not files_dir.exists()
+    assert list(json_path.parent.glob(f"{eid}.json.newtmp-*")) == []
+    assert list(json_path.parent.glob(f"{eid}.json.bak-*")) == []
+
+
+# ── 36. update_estimate(): rollback自体が失敗→RuntimeError（両方の例外を保持） ──
+def test_update_estimate_rollback_failure_raises_runtimeerror_with_both_errors(monkeypatch):
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        drawing_materials={"pdf": _pdf_bytes()}, saved_step=1,
+    )
+    files_dir = es._estimate_files_dir("nikko", eid)
+    json_path = es._ESTIMATES_DIR / "nikko" / f"{eid}.json"
+
+    def _fail_json_swap_and_its_rollback(src_name, dst_name):
+        # 本来のswap（tmp_json_path -> json_path）を失敗させる
+        if ".newtmp-" in src_name and dst_name.endswith(".json"):
+            return True
+        # そのrollback処理（bak_json_path -> json_path への復元）も失敗させる
+        if ".bak-" in src_name and dst_name.endswith(".json"):
+            return True
+        return False
+
+    _flaky_replace(monkeypatch, es, _fail_json_swap_and_its_rollback)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        es.update_estimate(
+            "nikko", eid, PROJECT2, QUANTITIES2, ESTIMATION2,
+            drawing_materials={"floor_plan": _pdf_bytes()}, saved_step=4,
+        )
+
+    # 元のswap失敗・rollback失敗の両方の情報がRuntimeErrorから辿れること
+    assert exc_info.value.__cause__ is not None
+    message = str(exc_info.value)
+    assert "rollback" in message.lower() or "ロールバック" in message or "rollback" in message
+
+
+# ── 36b. update_estimate(): 切替成功後のbak削除失敗は黙殺せずBackupCleanupError ──
+def test_update_estimate_bak_files_dir_cleanup_failure_raises_explicit_exception(monkeypatch):
+    """ファイルバックアップ（.bak-*ディレクトリ）の削除失敗が明示的な例外になること。
+    本番データは既に更新後の内容であり、rollbackは行われない。"""
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        drawing_materials={"pdf": _pdf_bytes()},
+    )
+    files_dir = es._estimate_files_dir("nikko", eid)
+    json_path = es._ESTIMATES_DIR / "nikko" / f"{eid}.json"
+
+    original_rmtree = es.shutil.rmtree
+
+    def _flaky_rmtree(path, *args, **kwargs):
+        if ".bak-" in Path(path).name:
+            raise OSError("simulated bak files dir cleanup failure")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(es.shutil, "rmtree", _flaky_rmtree)
+
+    new_pdf = _pdf_bytes() + b"\n%NEW\n"
+    with pytest.raises(es.BackupCleanupError) as exc_info:
+        es.update_estimate(
+            "nikko", eid, PROJECT2, QUANTITIES2, ESTIMATION2,
+            drawing_materials={"floor_plan": new_pdf},
+        )
+
+    message = str(exc_info.value)
+    assert eid in message
+    assert ".bak-" in message
+
+    # 本番JSON・本番ファイルは更新後の内容であること（rollbackされていない）
+    updated = es.load_estimate("nikko", eid)
+    assert updated["project"] == PROJECT2
+    assert (files_dir / "floor_plan.pdf").read_bytes() == new_pdf
+    assert not (files_dir / "drawing_source.pdf").exists()
+
+    # 削除に失敗したファイルバックアップだけが残っていること
+    remaining_bak_dirs = list(files_dir.parent.glob(f"{eid}.bak-*"))
+    assert len(remaining_bak_dirs) == 1
+    # 削除できたJSONバックアップは残っていないこと
+    remaining_bak_jsons = list(json_path.parent.glob(f"{eid}.json.bak-*"))
+    assert remaining_bak_jsons == []
+
+
+def test_update_estimate_bak_json_cleanup_failure_raises_explicit_exception(monkeypatch):
+    """JSONバックアップ（.bak-*ファイル）の削除失敗が明示的な例外になること。
+    本番データは既に更新後の内容であり、rollbackは行われない。"""
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        drawing_materials={"pdf": _pdf_bytes()},
+    )
+    files_dir = es._estimate_files_dir("nikko", eid)
+    json_path = es._ESTIMATES_DIR / "nikko" / f"{eid}.json"
+
+    original_unlink = Path.unlink
+
+    def _flaky_unlink(self, *args, **kwargs):
+        if ".json.bak-" in self.name:
+            raise OSError("simulated bak json cleanup failure")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _flaky_unlink)
+
+    new_pdf = _pdf_bytes() + b"\n%NEW\n"
+    with pytest.raises(es.BackupCleanupError) as exc_info:
+        es.update_estimate(
+            "nikko", eid, PROJECT2, QUANTITIES2, ESTIMATION2,
+            drawing_materials={"floor_plan": new_pdf},
+        )
+
+    message = str(exc_info.value)
+    assert eid in message
+    assert ".bak-" in message
+
+    updated = es.load_estimate("nikko", eid)
+    assert updated["project"] == PROJECT2
+    assert (files_dir / "floor_plan.pdf").read_bytes() == new_pdf
+
+    # 削除に失敗したJSONバックアップだけが残っていること
+    remaining_bak_jsons = list(json_path.parent.glob(f"{eid}.json.bak-*"))
+    assert len(remaining_bak_jsons) == 1
+    # 削除できたファイルバックアップは残っていないこと
+    remaining_bak_dirs = list(files_dir.parent.glob(f"{eid}.bak-*"))
+    assert remaining_bak_dirs == []
+
+
+# ── 37. update_estimate(): 他案件・他社は無傷 ────────────────────
+def test_update_estimate_does_not_touch_other_estimates_or_companies():
+    eid_a = es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION,
+                             drawing_materials={"pdf": _pdf_bytes()})
+    eid_b = es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION,
+                             drawing_materials={"pdf": _pdf_bytes()})
+    eid_c = es.save_estimate("other_company", PROJECT, QUANTITIES, ESTIMATION,
+                             drawing_materials={"pdf": _pdf_bytes()})
+
+    before_b = es.load_estimate("nikko", eid_b)
+    before_c = es.load_estimate("other_company", eid_c)
+
+    es.update_estimate("nikko", eid_a, PROJECT2, QUANTITIES2, ESTIMATION2)
+
+    assert es.load_estimate("nikko", eid_b) == before_b
+    assert es.load_estimate("other_company", eid_c) == before_c
+
+
+# ── 38. update_estimate(): 成功後は一時・バックアップの残骸が残らない ──
+def test_update_estimate_leaves_no_tmp_or_bak_residue_after_success():
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        drawing_materials={"pdf": _pdf_bytes()},
+    )
+    files_dir = es._estimate_files_dir("nikko", eid)
+    json_path = es._ESTIMATES_DIR / "nikko" / f"{eid}.json"
+
+    es.update_estimate(
+        "nikko", eid, PROJECT2, QUANTITIES2, ESTIMATION2,
+        drawing_materials={"floor_plan": _pdf_bytes()},
+    )
+
+    assert list(json_path.parent.glob(f"{eid}.json.newtmp-*")) == []
+    assert list(json_path.parent.glob(f"{eid}.json.bak-*")) == []
+    assert list(files_dir.parent.glob(f"{eid}.newtmp-*")) == []
+    assert list(files_dir.parent.glob(f"{eid}.bak-*")) == []
+
+
+# ── 39. update_estimate(): canvas_states・入力dictを変更しないこと ──
+def test_update_estimate_does_not_mutate_input_canvas_states_dict():
+    eid = es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION)
+    cs = _valid_canvas_states()
+    import copy
+    cs_copy = copy.deepcopy(cs)
+    es.update_estimate("nikko", eid, PROJECT2, QUANTITIES2, ESTIMATION2, canvas_states=cs)
+    assert cs == cs_copy
+
+
+# ═════════════════════════════════════════════════════════════════
+# load_estimate_file(): 保存済みファイルの安全な読込
+# ═════════════════════════════════════════════════════════════════
+
+def test_load_estimate_file_returns_bytes_filename_and_content_type_on_success():
+    pdf = _pdf_bytes()
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        drawing_materials={"pdf": pdf},
+    )
+    saved = es.load_estimate("nikko", eid)
+    file_meta = saved["files"]["pdf"]
+
+    result = es.load_estimate_file(file_meta)
+    assert result["bytes"] == pdf
+    assert result["filename"] == "drawing_source.pdf"
+    assert result["content_type"] == "application/pdf"
+
+
+def test_load_estimate_file_raises_on_missing_file():
+    file_meta = {
+        "filename": "ghost.pdf",
+        "relative_path": "estimate_files/nikko/doesnotexist123/ghost.pdf",
+        "content_type": "application/pdf",
+        "size": 10,
+        "sha256": "0" * 64,
+    }
+    with pytest.raises(FileNotFoundError):
+        es.load_estimate_file(file_meta)
+
+
+def test_load_estimate_file_rejects_size_mismatch():
+    pdf = _pdf_bytes()
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        drawing_materials={"pdf": pdf},
+    )
+    saved = es.load_estimate("nikko", eid)
+    file_meta = dict(saved["files"]["pdf"])
+    file_meta["size"] = file_meta["size"] + 1
+    with pytest.raises(ValueError):
+        es.load_estimate_file(file_meta)
+
+
+def test_load_estimate_file_rejects_sha256_mismatch():
+    pdf = _pdf_bytes()
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        drawing_materials={"pdf": pdf},
+    )
+    saved = es.load_estimate("nikko", eid)
+    file_meta = dict(saved["files"]["pdf"])
+    file_meta["sha256"] = "f" * 64
+    with pytest.raises(ValueError):
+        es.load_estimate_file(file_meta)
+
+
+@pytest.mark.parametrize("bad_relative_path", [
+    "/etc/passwd",
+    "../../etc/passwd",
+    "estimate_files/../../../etc/passwd",
+    "",
+    None,
+    123,
+])
+def test_load_estimate_file_rejects_unsafe_relative_path(bad_relative_path):
+    file_meta = {
+        "filename": "x.pdf",
+        "relative_path": bad_relative_path,
+        "content_type": "application/pdf",
+        "size": 0,
+        "sha256": "0" * 64,
+    }
+    with pytest.raises(ValueError):
+        es.load_estimate_file(file_meta)
+
+
+def test_load_estimate_file_rejects_relative_path_escaping_data_dir_via_resolve():
+    """絶対パスではないが resolve() 後に data/ 配下を逸脱する相対パスも拒否すること。"""
+    file_meta = {
+        "filename": "x.pdf",
+        "relative_path": "estimate_files/../../outside.pdf",
+        "content_type": "application/pdf",
+        "size": 0,
+        "sha256": "0" * 64,
+    }
+    with pytest.raises(ValueError):
+        es.load_estimate_file(file_meta)
+
+
+def test_load_estimate_file_rejects_path_pointing_into_estimates_directory():
+    """estimate_files以外のdata配下（data/estimates等）を指すrelative_pathは、
+    実在するファイルであっても拒否すること（文字列上の"estimate_files/"接頭辞に依存しない
+    resolve()ベースの包含確認の確認。修正1）。"""
+    eid = es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION)
+    json_path = es._ESTIMATES_DIR / "nikko" / f"{eid}.json"
+    assert json_path.exists()
+
+    import hashlib
+    file_meta = {
+        "filename": "leak.json",
+        "relative_path": f"estimates/nikko/{eid}.json",
+        "content_type": "application/json",
+        "size": json_path.stat().st_size,
+        "sha256": hashlib.sha256(json_path.read_bytes()).hexdigest(),
+    }
+    with pytest.raises(ValueError):
+        es.load_estimate_file(file_meta)
+
+
+def test_load_estimate_file_allows_normal_file_directly_under_estimate_files_dir():
+    """_ESTIMATE_FILES_DIR配下の正常な案件ファイルは従来通り読めること（修正1後の回帰確認）。"""
+    png = _png_bytes()
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        drawing_materials={"photos": [png]},
+    )
+    saved = es.load_estimate("nikko", eid)
+    file_meta = saved["files"]["photos"][0]
+    result = es.load_estimate_file(file_meta)
+    assert result["bytes"] == png
+
+
+def test_load_estimate_file_rejects_relative_path_with_dotdot_even_if_resolves_back_into_estimate_files():
+    """パス部品に'..'が含まれる場合は、resolve後にestimate_files配下へ戻る場合であっても
+    単純かつ厳格に拒否する（修正1の仕様：'..'を1つでも含めば拒否）。"""
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        drawing_materials={"pdf": _pdf_bytes()},
+    )
+    saved = es.load_estimate("nikko", eid)
+    real_meta = saved["files"]["pdf"]
+    sneaky_path = f"estimate_files/nikko/{eid}/../{eid}/drawing_source.pdf"
+
+    # sneaky_pathがresolve後には本来の実ファイルと同じ場所を指すことの確認（テストの前提確認）
+    files_root = es._ESTIMATE_FILES_DIR
+    resolved = (files_root.parent / sneaky_path).resolve()
+    assert resolved == (files_root / "nikko" / eid / "drawing_source.pdf").resolve()
+
+    file_meta = dict(real_meta)
+    file_meta["relative_path"] = sneaky_path
+    with pytest.raises(ValueError):
+        es.load_estimate_file(file_meta)
+
+
+def test_load_estimate_file_rejects_non_dict_file_meta():
+    with pytest.raises(ValueError):
+        es.load_estimate_file(["not", "a", "dict"])
+
+
+def test_load_estimate_file_rejects_missing_size_or_sha256():
+    pdf = _pdf_bytes()
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        drawing_materials={"pdf": pdf},
+    )
+    saved = es.load_estimate("nikko", eid)
+    file_meta_no_size = dict(saved["files"]["pdf"])
+    del file_meta_no_size["size"]
+    with pytest.raises(ValueError):
+        es.load_estimate_file(file_meta_no_size)
+
+    file_meta_no_sha = dict(saved["files"]["pdf"])
+    del file_meta_no_sha["sha256"]
+    with pytest.raises(ValueError):
+        es.load_estimate_file(file_meta_no_sha)
