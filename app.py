@@ -261,6 +261,7 @@ DEFAULTS = {
         "_3d_trace_png": None,
     "theme":                 "スタンダード",
     "step3_drawing_files":   [],
+    "current_case_id":       None,
 }
 for _k, _v in DEFAULTS.items():
     if _k not in st.session_state:
@@ -317,6 +318,9 @@ with st.sidebar:
         for k in CASE_RESET_KEYS:
             if k in st.session_state:
                 del st.session_state[k]
+        # A3-0b-3-2: current_case_idはCASE_RESET_KEYSに含めない設計のため、
+        # 新規案件開始時はここで明示的にNoneへ戻す
+        st.session_state.current_case_id = None
         st.session_state.step = 1
         st.rerun()
     with st.expander("⚙️ 積算ルール設定"):
@@ -342,7 +346,11 @@ with st.sidebar:
         st.session_state.show_account_settings = not st.session_state.get("show_account_settings", False)
 
     with st.expander("📋 過去の案件"):
-        from core.estimate_storage import list_estimates as _list_est, load_estimate as _load_est
+        from core.estimate_storage import (
+            list_estimates as _list_est,
+            load_estimate as _load_est,
+            load_estimate_file as _load_ef,
+        )
         _ests = _list_est(st.session_state.company_id)
         if not _ests:
             st.caption("まだ保存された案件はありません")
@@ -360,12 +368,80 @@ with st.sidebar:
                     if st.button("読込", key=f"load_est_{_e['id']}", use_container_width=True):
                         _ed = _load_est(st.session_state.company_id, _e['id'])
                         if _ed:
-                            st.session_state.project    = _ed["project"]
-                            st.session_state.quantities = _ed["quantities"]
-                            st.session_state.estimation = _ed["estimation"]
+                            # A3-0b-3-2: 読込前に現在のsession_state（案件データのみ）を
+                            # クリアしてから復元する。これを行わないと前案件と読込案件の
+                            # データが混在する（既知バグの修正）。
+                            for k in CASE_RESET_KEYS:
+                                if k in st.session_state:
+                                    del st.session_state[k]
+
+                            st.session_state.current_case_id = _e["id"]
+                            st.session_state.project    = _ed.get("project", {})
+                            st.session_state.quantities = _ed.get("quantities", {})
+                            st.session_state.estimation = _ed.get("estimation", {})
                             if _ed.get("estimation_sheet_data"):
                                 st.session_state.estimation_sheet_data = _ed["estimation_sheet_data"]
-                            st.session_state.step = 5
+                            if _ed.get("canvas_states"):
+                                st.session_state.canvas_states = _ed["canvas_states"]
+                            if _ed.get("drawing_data"):
+                                st.session_state.drawing_data = _ed["drawing_data"]
+                            if _ed.get("image_data"):
+                                st.session_state.image_data = _ed["image_data"]
+                            if _ed.get("drawing_scale") is not None:
+                                st.session_state.drawing_scale = _ed["drawing_scale"]
+                            if _ed.get("original_paper") is not None:
+                                st.session_state.original_paper = _ed["original_paper"]
+
+                            # 保存済み添付ファイルの実体をsession_stateへ復元する。
+                            # 1件の復元に失敗しても、そこだけログに記録し案件全体の
+                            # 読込は継続する（他の項目まで読込失敗にはしない）。
+                            _files_meta = _ed.get("files") or {}
+                            _single_file_map = {
+                                "pdf":               "pdf_bytes",
+                                "floor_plan":        "floor_plan_bytes",
+                                "drawing_annotated": "drawing_annotated_img",
+                                "drawing_page1_raw": "drawing_page1_raw",
+                                "trace_3d":          "_3d_trace_png",
+                            }
+                            for _fk, _sk in _single_file_map.items():
+                                _fm = _files_meta.get(_fk)
+                                if _fm:
+                                    try:
+                                        st.session_state[_sk] = _load_ef(_fm)["bytes"]
+                                    except (FileNotFoundError, ValueError) as _fe:
+                                        log_error("案件読込: 添付ファイル復元失敗", _fe, "FILE")
+
+                            _photo_bytes_list = []
+                            for _pm in (_files_meta.get("photos") or []):
+                                try:
+                                    _photo_bytes_list.append(_load_ef(_pm)["bytes"])
+                                except (FileNotFoundError, ValueError) as _fe:
+                                    log_error("案件読込: 現場写真復元失敗", _fe, "FILE")
+                            if _photo_bytes_list:
+                                st.session_state.photo_bytes_list = _photo_bytes_list
+
+                            _step3_files = []
+                            for _sm in (_files_meta.get("step3_drawings") or []):
+                                try:
+                                    _restored = _load_ef(_sm)
+                                    _step3_files.append({
+                                        "filename": _restored.get("filename") or _sm.get("filename"),
+                                        "bytes":    _restored["bytes"],
+                                    })
+                                except (FileNotFoundError, ValueError) as _fe:
+                                    log_error("案件読込: STEP3追加図面復元失敗", _fe, "FILE")
+                            if _step3_files:
+                                st.session_state.step3_drawing_files = _step3_files
+
+                            _saved_step = _ed.get("saved_step")
+                            st.session_state.step = (
+                                _saved_step
+                                if isinstance(_saved_step, int)
+                                and not isinstance(_saved_step, bool)
+                                and 1 <= _saved_step <= 5
+                                else 5
+                            )
+                            log_ui("案件読込", {"estimate_id": _e["id"]})
                             st.success(f"{_e['client_name']} を読み込みました")
                             st.rerun()
     st.markdown("---")
@@ -802,21 +878,26 @@ if st.session_state.step == 1:
                 "building_area":   building_area,
                 "voice_memo":      voice_memo,
             }
+            # A3-0b-3-2: 読込済み案件（current_case_id あり）の場合、file_uploaderが
+            # 空であっても既存の添付（案件読込で復元されたもの）を黙って削除しない。
+            # 新規案件（current_case_idなし）の場合のみ、従来どおり「未選択＝削除」の
+            # 挙動を維持する。
+            _is_loaded_case = bool(st.session_state.get("current_case_id"))
             if pdf_file:
                 st.session_state["pdf_bytes"] = pdf_file.getvalue()
                 st.session_state["drawing_scale"]  = drawing_scale
                 st.session_state["original_paper"] = original_paper
-            elif "pdf_bytes" in st.session_state:
+            elif not _is_loaded_case and "pdf_bytes" in st.session_state:
                 del st.session_state["pdf_bytes"]
                 st.session_state.pop("drawing_scale", None)
                 st.session_state.pop("original_paper", None)
             if floor_plan_file:
                 st.session_state["floor_plan_bytes"] = floor_plan_file.getvalue()
-            elif "floor_plan_bytes" in st.session_state:
+            elif not _is_loaded_case and "floor_plan_bytes" in st.session_state:
                 del st.session_state["floor_plan_bytes"]
             if photo_files:
                 st.session_state["photo_bytes_list"] = [f.getvalue() for f in photo_files]
-            elif "photo_bytes_list" in st.session_state:
+            elif not _is_loaded_case and "photo_bytes_list" in st.session_state:
                 del st.session_state["photo_bytes_list"]
             st.session_state.voice_memo = voice_memo
             st.session_state.auto_done  = False
@@ -2723,15 +2804,16 @@ elif st.session_state.step == 3:
     ]
     all_sources = step1_sources + additional_sources
 
-    # ── STEP3追加図面をsession_stateへコピー（A3-0b-1） ─────────
-    # ウィジェット（drawing_upload_step3）の状態そのものに依存せず、
-    # STEP3表示のたびに現在の添付内容をミラーリングしておく。
-    # これによりSTEP5（保存ボタン）到達時にも、STEP3で最後に表示された
-    # 添付内容を参照できる。
-    st.session_state["step3_drawing_files"] = [
-        {"filename": f.name, "bytes": f.getvalue()}
-        for f in (additional_files or [])
-    ]
+    # ── STEP3追加図面をsession_stateへコピー（A3-0b-1、A3-0b-3-2で修正） ─────────
+    # ウィジェット（drawing_upload_step3）で新たにファイルが選択された場合のみ
+    # ミラーリングする。新規選択が無い場合は上書きしない：
+    # 新規選択のたびに無条件で上書きしていると、案件読込（A3-0b-3-2）で復元した
+    # 添付や前回アップロード分が、STEP3を再訪問しただけで黙って消えてしまうため。
+    if additional_files:
+        st.session_state["step3_drawing_files"] = [
+            {"filename": f.name, "bytes": f.getvalue()}
+            for f in additional_files
+        ]
 
     pages, load_errors = load_drawing_pages_with_errors(all_sources)
 
@@ -3119,14 +3201,32 @@ elif st.session_state.step == 5:
 
     # ── 案件保存 ───────────────────────────────────────────────
     st.markdown("---")
-    from core.estimate_storage import save_estimate as _save_est
-    _saved_key = "estimate_saved_id"
-    if st.session_state.get(_saved_key):
-        st.info(f"💾 保存済み（ID: {st.session_state[_saved_key]}）")
+    from core.estimate_storage import (
+        save_estimate as _save_est,
+        update_estimate as _update_est,
+    )
+    # A3-0b-3-2: estimate_saved_id は廃止し current_case_id へ統合した。
+    # current_case_id はCASE_RESET_KEYSに含まれず、サイドバー「最初からやり直す」／
+    # 「🆕 新しい案件を作成」で明示的にNoneへ戻すため、「保存済み」表示がリセット後も
+    # 残ってしまう既存バグはここで解消される。
+    _current_case_id = st.session_state.get("current_case_id")
+    if _current_case_id:
+        st.info(f"💾 保存済み（ID: {_current_case_id}） ※保存すると上書き更新されます")
+
+    # A3-0b-3-2追加修正: 保存成功後にst.rerun()すると、直後のst.success()呼び出しは
+    # rerunによって画面から消えてしまう。そこで成功メッセージを一旦session_stateへ
+    # フラッシュメッセージとして保持し、rerun後のこの位置で表示してから削除する。
+    # これにより、保存直後にサイドバーの「過去の案件」一覧（本ブロックより前で
+    # list_estimates()を呼んでいる）が最新状態で再描画されつつ、メッセージも
+    # 同じ画面に表示できる。
+    _flash = st.session_state.pop("_case_save_flash", None)
+    if _flash:
+        st.success(_flash)
+
     if st.button("💾 この見積りを案件履歴に保存", use_container_width=True, key="save_estimate_btn"):
         # A3-0b-1: 図面等の実体ファイルはこの保存タイミングでのみ永続化する
         # A3-0b-2: canvas_states（手動計測キャンバスの状態）も同じタイミングでJSON内へ保存する
-        #          （読込・session_stateへの復元はA3-0b-3の対象のため、ここでは扱わない）
+        # A3-0b-3-2: current_case_idの有無で新規保存／既存案件への上書き保存を振り分ける
         _drawing_materials = {
             "pdf":               st.session_state.get("pdf_bytes"),
             "floor_plan":        st.session_state.get("floor_plan_bytes"),
@@ -3137,17 +3237,42 @@ elif st.session_state.step == 5:
             "step3_drawings":    st.session_state.get("step3_drawing_files") or [],
         }
         try:
-            _eid = _save_est(
-                company_id=st.session_state.company_id,
-                project=st.session_state.get("project", {}),
-                quantities=st.session_state.get("quantities", {}),
-                estimation=st.session_state.get("estimation", {}),
-                estimation_sheet_data=st.session_state.get("estimation_sheet_data"),
-                drawing_materials=_drawing_materials,
-                canvas_states=st.session_state.get("canvas_states") or {},
-            )
-            st.session_state[_saved_key] = _eid
-            st.success(f"✅ 案件を保存しました")
+            if _current_case_id:
+                _update_est(
+                    company_id=st.session_state.company_id,
+                    estimate_id=_current_case_id,
+                    project=st.session_state.get("project", {}),
+                    quantities=st.session_state.get("quantities", {}),
+                    estimation=st.session_state.get("estimation", {}),
+                    estimation_sheet_data=st.session_state.get("estimation_sheet_data"),
+                    drawing_materials=_drawing_materials,
+                    canvas_states=st.session_state.get("canvas_states") or {},
+                    saved_step=st.session_state.get("step"),
+                    drawing_data=st.session_state.get("drawing_data"),
+                    image_data=st.session_state.get("image_data"),
+                    drawing_scale=st.session_state.get("drawing_scale"),
+                    original_paper=st.session_state.get("original_paper"),
+                )
+                st.session_state["_case_save_flash"] = "✅ 案件を上書き保存しました"
+                st.rerun()
+            else:
+                _eid = _save_est(
+                    company_id=st.session_state.company_id,
+                    project=st.session_state.get("project", {}),
+                    quantities=st.session_state.get("quantities", {}),
+                    estimation=st.session_state.get("estimation", {}),
+                    estimation_sheet_data=st.session_state.get("estimation_sheet_data"),
+                    drawing_materials=_drawing_materials,
+                    canvas_states=st.session_state.get("canvas_states") or {},
+                    saved_step=st.session_state.get("step"),
+                    drawing_data=st.session_state.get("drawing_data"),
+                    image_data=st.session_state.get("image_data"),
+                    drawing_scale=st.session_state.get("drawing_scale"),
+                    original_paper=st.session_state.get("original_paper"),
+                )
+                st.session_state.current_case_id = _eid
+                st.session_state["_case_save_flash"] = "✅ 案件を保存しました"
+                st.rerun()
         except Exception as e:
             log_error("案件保存エラー", e, "FILE")
             st.error("保存に失敗しました。もう一度お試しください。")
@@ -3166,6 +3291,9 @@ elif st.session_state.step == 5:
             for k in CASE_RESET_KEYS:
                 if k in st.session_state:
                     del st.session_state[k]
+            # A3-0b-3-2: current_case_idはCASE_RESET_KEYSに含めない設計のため、
+            # 新規案件開始時はここで明示的にNoneへ戻す
+            st.session_state.current_case_id = None
             st.session_state.step = 1
             st.rerun()
 
