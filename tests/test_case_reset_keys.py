@@ -153,3 +153,22 @@ def test_save_estimate_button_passes_drawing_materials_kwarg():
     kwarg_names = {kw.arg for call in calls for kw in call.keywords}
     assert "drawing_materials" in kwarg_names, \
         "save_estimate() 呼び出しに drawing_materials キーワード引数が渡されていません"
+
+
+def test_save_estimate_button_passes_canvas_states_kwarg():
+    """STEP5「💾 この見積りを案件履歴に保存」が save_estimate() へ
+    canvas_states キーワード引数を渡していること（A3-0b-2）"""
+    blocks = _button_blocks()
+    label = "💾 この見積りを案件履歴に保存"
+    assert label in blocks, "STEP5の保存ボタンが見つかりません"
+
+    calls = [
+        n for n in ast.walk(blocks[label])
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id in ("_save_est", "save_estimate")
+    ]
+    assert calls, "保存ボタンブロック内に save_estimate() 呼び出しが見つかりません"
+    kwarg_names = {kw.arg for call in calls for kw in call.keywords}
+    assert "canvas_states" in kwarg_names, \
+        "save_estimate() 呼び出しに canvas_states キーワード引数が渡されていません"

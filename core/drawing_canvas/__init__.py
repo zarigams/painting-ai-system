@@ -18,7 +18,8 @@ drawing_canvas – Fabric.js 4.6.0 ベースの手動計測カスタムコンポ
     #     "viewport_transform": [float x6],   # Fabric viewportTransform
     #     "objects": [                         # 計測線リスト
     #       {"type":"line","orig_x1":float,"orig_y1":float,
-    #        "orig_x2":float,"orig_y2":float,"length_px":float},
+    #        "orig_x2":float,"orig_y2":float,"length_px":float,
+    #        "category":str|None},             # A3-1: 積算属性（色分けはこの値からの表示専用の派生）
     #       ...
     #     ]
     #   }
@@ -28,7 +29,15 @@ drawing_canvas – Fabric.js 4.6.0 ベースの手動計測カスタムコンポ
     - 背景画像は元画像サイズで配置
     - ズーム・パンは viewportTransform のみ変更
     - マウス座標は canvas.getPointer() で取得
-    - 各直線に _origX1/_origY1/_origX2/_origY2/_lengthPx を保持
+    - 各直線に _origX1/_origY1/_origX2/_origY2/_lengthPx/_category を保持
+
+A3-1（カテゴリ・個別選択削除・1操作Undo）:
+    - カテゴリはCANVAS_CATEGORIES（core.estimate_storage）を唯一の正本とし、フロントエンドへは
+      `categories` propとして渡す（フロント側にリストをハードコードで二重管理させない）。
+    - カテゴリは「色分け」ではなく積算属性として設計する。線のstroke色はcategoryからフロント側が
+      導出する表示専用の値であり、保存データ（objects配列）には含めない。
+    - 個別選択・個別削除・直近1操作Undo（追加・削除のみ、Redoなし）はフロントエンド（Fabric.js）側の
+      責務。Python側は最終的に送られてきたobjects配列を検証・正規化するのみ。
 """
 from __future__ import annotations
 
@@ -36,6 +45,8 @@ import base64
 import math
 import os
 import streamlit.components.v1 as components
+
+from core.estimate_storage import CANVAS_CATEGORIES
 
 # フロントエンドの HTML があるディレクトリ
 _FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend")
@@ -45,6 +56,8 @@ _drawing_canvas_component = components.declare_component(
     "drawing_canvas",
     path=_FRONTEND_DIR,
 )
+
+_CANVAS_CATEGORY_SET = set(CANVAS_CATEGORIES)
 
 
 def drawing_canvas(
@@ -80,7 +93,8 @@ def drawing_canvas(
             "viewport_transform": [float x6],
             "objects": [
                 {"type": "line", "orig_x1": float, "orig_y1": float,
-                 "orig_x2": float, "orig_y2": float, "length_px": float},
+                 "orig_x2": float, "orig_y2": float, "length_px": float,
+                 "category": str | None},
                 ...
             ]
         }
@@ -96,6 +110,7 @@ def drawing_canvas(
         pageKey=page_key,
         canvasState=canvas_state,       # 状態全体 dict を渡す
         canvasHeight=canvas_height,     # 明示的に高さを渡す
+        categories=list(CANVAS_CATEGORIES),  # A3-1: カテゴリ候補（唯一の正本から渡す）
         default=None,
         key=key or f"drawing_canvas_{page_key}",
         height=canvas_height + 44,      # TOOLBAR_H = 44px
@@ -154,6 +169,15 @@ def drawing_canvas(
             continue
         # Python 側で長さを再計算（JS 値に依存しない）
         calculated_length = math.hypot(x2 - x1, y2 - y1)
+
+        # A3-1: category は積算属性（オプショナル）。CANVAS_CATEGORIES外・非文字列・bool等は
+        # 不正値として静かにNone（未分類）へ正規化する（ジオメトリ自体は有効なので行ごと捨てない）。
+        raw_category = item.get("category")
+        if isinstance(raw_category, str) and raw_category in _CANVAS_CATEGORY_SET:
+            category = raw_category
+        else:
+            category = None
+
         objects.append(
             {
                 "type": "line",
@@ -162,6 +186,7 @@ def drawing_canvas(
                 "orig_x2": x2,
                 "orig_y2": y2,
                 "length_px": calculated_length,
+                "category": category,
             }
         )
 
