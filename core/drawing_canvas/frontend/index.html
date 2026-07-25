@@ -45,6 +45,21 @@
     }
     .btn.danger { border-color: #ff4d4f; color: #ff4d4f; }
     .btn.danger:hover { background: #fff1f0; }
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .btn:disabled:hover { background: #ffffff; }
+    .btn.danger:disabled:hover { background: #ffffff; }
+
+    #category-select {
+      padding: 4px 8px;
+      border: 1px solid #d9d9d9;
+      border-radius: 4px;
+      background: #ffffff;
+      font-size: 13px;
+      max-width: 140px;
+    }
 
     #mode-label {
       font-size: 12px;
@@ -72,6 +87,7 @@
     }
     #canvas-wrapper.mode-move          { cursor: grab; }
     #canvas-wrapper.mode-move.dragging { cursor: grabbing; }
+    #canvas-wrapper.mode-select        { cursor: default; }
     canvas { display: block; }
   </style>
 </head>
@@ -81,7 +97,11 @@
 <div id="toolbar">
   <button class="btn active" id="btn-line" title="線を引くモード">✏️ 線モード</button>
   <button class="btn"        id="btn-move" title="図面をパンするモード">✋ 移動モード</button>
+  <button class="btn"        id="btn-select" title="線を選択するモード">👆 選択モード</button>
+  <select id="category-select" title="描画するカテゴリ（積算属性）を選択"></select>
   <span id="mode-label">クリック＆ドラッグで直線を描画</span>
+  <button class="btn danger" id="btn-delete-selected" title="選択中の線を削除" disabled>🗑 選択中を削除</button>
+  <button class="btn"        id="btn-undo" title="直近の操作を取り消す" disabled>↩️ 元に戻す</button>
   <button class="btn danger" id="btn-clear" title="すべての線を削除">🗑 全消去</button>
   <button class="btn"        id="btn-reset" title="初期表示に戻す">⟳ リセット</button>
   <span id="zoom-label">100%</span>
@@ -143,6 +163,32 @@
     },
   };
 
+  // ─── カテゴリ → 表示色（A3-1） ─────────────────────────────
+  // 重要: color はデータではなく、category からフロント側が導出する表示専用の値。
+  // 保存データ（objects配列 / canvas_states）には category のみを含め、色は含めない。
+  const CATEGORY_COLORS = {
+    "外壁":             "#e63946",
+    "軒天":             "#f77f00",
+    "破風":             "#fcbf49",
+    "鼻隠し":           "#06a77d",
+    "雨樋":             "#1d3557",
+    "シャッターボックス": "#457b9d",
+    "水切り":           "#2ec4b6",
+    "幕板":             "#9d4edd",
+    "ベランダ床":        "#ff6392",
+    "シーリング":        "#6a994e",
+    "その他":           "#6c757d",
+  };
+  // 未分類（category が null、または未知の値）の既定色
+  const DEFAULT_LINE_COLOR = "#999999";
+
+  function colorForCategory(category) {
+    if (typeof category === "string" && Object.prototype.hasOwnProperty.call(CATEGORY_COLORS, category)) {
+      return CATEGORY_COLORS[category];
+    }
+    return DEFAULT_LINE_COLOR;
+  }
+
   // ─── 状態変数 ────────────────────────────────────────────
   let canvas            = null;   // Fabric.Canvas
   let bgImage           = null;   // Fabric.Image（背景）
@@ -151,7 +197,16 @@
   let fitZoom           = 0;      // 初期フィット倍率（背景ロード前は 0、ロード後に更新）
   let canvasDisplayHeight = 600;  // キャンバス表示高さ（ツールバー含まず）
   let currentPageKey    = "";     // 現在のページキー
-  let mode              = "line"; // "line" | "move"
+  let mode              = "line"; // "line" | "move" | "select"
+
+  // カテゴリ（積算属性）関連
+  let categories       = [];      // Python から渡される候補リスト（唯一の正本は core.estimate_storage）
+  let currentCategory  = null;    // 次に描画する線へ適用するカテゴリ
+
+  // 直近1操作Undo（追加・削除のみ、Redoなし）
+  // undoSnapshot: 直前の変更操作の「変更前」状態（serializeLines() と同じ形式の配列）。
+  // 1回 Undo を実行すると null に戻すため、連続 Undo・Redo はできない。
+  let undoSnapshot = null;
 
   // 線描画中の状態
   let isDrawing         = false;
@@ -176,14 +231,18 @@
   let activeLoadKey = null;
 
   // DOM 要素
-  const btnLine   = document.getElementById("btn-line");
-  const btnMove   = document.getElementById("btn-move");
-  const btnClear  = document.getElementById("btn-clear");
-  const btnReset  = document.getElementById("btn-reset");
-  const modeLabel = document.getElementById("mode-label");
-  const lineCount = document.getElementById("line-count");
-  const zoomLabel = document.getElementById("zoom-label");
-  const wrapper   = document.getElementById("canvas-wrapper");
+  const btnLine           = document.getElementById("btn-line");
+  const btnMove           = document.getElementById("btn-move");
+  const btnSelect         = document.getElementById("btn-select");
+  const categorySelect    = document.getElementById("category-select");
+  const btnDeleteSelected = document.getElementById("btn-delete-selected");
+  const btnUndo           = document.getElementById("btn-undo");
+  const btnClear          = document.getElementById("btn-clear");
+  const btnReset          = document.getElementById("btn-reset");
+  const modeLabel         = document.getElementById("mode-label");
+  const lineCount         = document.getElementById("line-count");
+  const zoomLabel         = document.getElementById("zoom-label");
+  const wrapper           = document.getElementById("canvas-wrapper");
 
   // ─── レイアウト適用 ──────────────────────────────────────
   function applyLayout() {
@@ -211,6 +270,9 @@
     canvas.on("mouse:move",  onMouseMove);
     canvas.on("mouse:up",    onMouseUp);
     canvas.on("mouse:wheel", onMouseWheel);
+    canvas.on("selection:created", onSelectionChanged);
+    canvas.on("selection:updated", onSelectionChanged);
+    canvas.on("selection:cleared", updateDeleteButtonState);
   }
 
   // ─── ビューポート値の検証 ────────────────────────────────
@@ -288,24 +350,120 @@
     updateZoomLabel();
   }
 
+  // ─── カテゴリ候補の反映（A3-1） ───────────────────────────
+  // categories の唯一の正本は core.estimate_storage.CANVAS_CATEGORIES。
+  // フロント側では二重管理せず、Streamlit から渡された候補をそのまま表示するのみ。
+  function populateCategories(cats) {
+    if (!Array.isArray(cats) || cats.length === 0) return;
+    categories = cats.slice();
+
+    categorySelect.innerHTML = "";
+    categories.forEach((cat) => {
+      const opt = document.createElement("option");
+      opt.value = cat;
+      opt.textContent = cat;
+      categorySelect.appendChild(opt);
+    });
+
+    if (!categories.includes(currentCategory)) {
+      currentCategory = categories[0];
+    }
+    categorySelect.value = currentCategory;
+  }
+
+  categorySelect.addEventListener("change", () => {
+    currentCategory = categorySelect.value;
+  });
+
+  // ─── 選択モード: 個別選択の許可/禁止を一括切替 ─────────────
+  // 誤操作防止のため、選択モード以外では既存線の selectable/evented を false に戻す。
+  // 選択できても移動・回転・拡大縮小はできないよう常に lockMovement 系は true に固定する。
+  function setLineInteractivity(enable) {
+    getCompletedLines().forEach((ln) => {
+      ln.set({
+        selectable: enable,
+        evented:    enable,
+      });
+    });
+  }
+
   // ─── モード切替 ──────────────────────────────────────────
   function setMode(m) {
     mode = m;
+    btnLine.classList.remove("active");
+    btnMove.classList.remove("active");
+    btnSelect.classList.remove("active");
+    wrapper.classList.remove("mode-move", "mode-select");
+
+    if (canvas) {
+      if (mode !== "select") {
+        canvas.discardActiveObject();
+      }
+      setLineInteractivity(mode === "select");
+      canvas.requestRenderAll();
+    }
+    updateDeleteButtonState();
+
     if (m === "line") {
       btnLine.classList.add("active");
-      btnMove.classList.remove("active");
       modeLabel.textContent = "クリック＆ドラッグで直線を描画";
-      wrapper.classList.remove("mode-move");
-    } else {
+    } else if (m === "move") {
       btnMove.classList.add("active");
-      btnLine.classList.remove("active");
       modeLabel.textContent = "ドラッグで図面をパン";
       wrapper.classList.add("mode-move");
+    } else {
+      btnSelect.classList.add("active");
+      modeLabel.textContent = "線をクリックして選択・削除";
+      wrapper.classList.add("mode-select");
     }
   }
 
   btnLine.addEventListener("click", () => setMode("line"));
   btnMove.addEventListener("click", () => setMode("move"));
+  btnSelect.addEventListener("click", () => setMode("select"));
+
+  // ─── 選択状態変化 ─────────────────────────────────────────
+  function onSelectionChanged() {
+    const active = canvas.getActiveObject();
+    // 複数選択・一括削除は今回スコープ外のため、activeSelection（複数選択）が
+    // 発生した場合は選択解除し、単一選択のみを許可する。
+    if (active && active.type === "activeSelection") {
+      canvas.discardActiveObject();
+      canvas.requestRenderAll();
+    }
+    updateDeleteButtonState();
+  }
+
+  function updateDeleteButtonState() {
+    const active = canvas ? canvas.getActiveObject() : null;
+    btnDeleteSelected.disabled = !(mode === "select" && active);
+  }
+
+  // ─── Undo（直近1操作のみ、Redoなし） ────────────────────────
+  function captureUndoSnapshot() {
+    undoSnapshot = serializeLines();
+    updateUndoButtonState();
+  }
+
+  function updateUndoButtonState() {
+    btnUndo.disabled = (undoSnapshot === null);
+  }
+
+  function performUndo() {
+    if (undoSnapshot === null) return;
+    const snapshot = undoSnapshot;
+    undoSnapshot = null;
+
+    getCompletedLines().forEach((ln) => canvas.remove(ln));
+    restoreLines(snapshot);
+    canvas.requestRenderAll();
+
+    updateUndoButtonState();
+    updateDeleteButtonState();
+    sendToStreamlit();
+  }
+
+  btnUndo.addEventListener("click", performUndo);
 
   // ─── UI 更新 ─────────────────────────────────────────────
   function updateZoomLabel() {
@@ -330,8 +488,9 @@
   // {
   //   page_key: str,
   //   viewport_transform: [a,b,c,d,e,f],  // 6要素
-  //   objects: [{"type":"line","orig_x1":...,...}]
+  //   objects: [{"type":"line","orig_x1":...,"category":str|null,...}]
   // }
+  // 注意: color は含めない（category から表示のたびに導出する派生値のため）。
   function serializeLines() {
     return getCompletedLines().map((ln) => ({
       type:      "line",
@@ -340,6 +499,7 @@
       orig_x2:   ln._origX2,
       orig_y2:   ln._origY2,
       length_px: ln._lengthPx,
+      category:  (ln._category != null) ? ln._category : null,
     }));
   }
 
@@ -359,9 +519,14 @@
 
   // ─── ボタンイベント ───────────────────────────────────────
   btnClear.addEventListener("click", () => {
-    getCompletedLines().forEach((ln) => canvas.remove(ln));
+    const lines = getCompletedLines();
+    if (lines.length === 0) return;  // 何もなければ Undo 対象にもしない
+    captureUndoSnapshot();
+    lines.forEach((ln) => canvas.remove(ln));
+    canvas.discardActiveObject();
     canvas.requestRenderAll();
     updateLineCount();
+    updateDeleteButtonState();
     sendToStreamlit();  // 消去後の空状態を Python へ送信
   });
 
@@ -370,9 +535,29 @@
     sendToStreamlit();  // リセット後の viewport を Python へ送信
   });
 
+  btnDeleteSelected.addEventListener("click", () => {
+    const active = canvas.getActiveObject();
+    if (!active || mode !== "select") return;
+
+    captureUndoSnapshot();
+    if (active.type === "activeSelection" && typeof active.forEachObject === "function") {
+      // 通常は単一選択のみの想定だが、念のため複数含まれていても安全に削除する。
+      active.forEachObject((obj) => canvas.remove(obj));
+    } else {
+      canvas.remove(active);
+    }
+    canvas.discardActiveObject();
+    canvas.requestRenderAll();
+    updateLineCount();
+    updateDeleteButtonState();
+    sendToStreamlit();
+  });
+
   // ─── 直線を復元 ──────────────────────────────────────────
   function restoreLines(objects) {
     if (!Array.isArray(objects) || objects.length === 0) return;
+
+    const selectableNow = (mode === "select");
 
     objects.forEach((item) => {
       if (!item || item.type !== "line") return;
@@ -381,18 +566,31 @@
       if (typeof x1 !== "number" || typeof y1 !== "number" ||
           typeof x2 !== "number" || typeof y2 !== "number") return;
 
+      // カテゴリは積算属性。未知の値・null は「未分類」として扱い、色のみ既定色を用いる。
+      const category = (typeof item.category === "string" &&
+        Object.prototype.hasOwnProperty.call(CATEGORY_COLORS, item.category))
+        ? item.category
+        : null;
+
       const sw = 2 / canvas.getZoom();
       const ln = new fabric.Line([x1, y1, x2, y2], {
-        stroke:      "#e63946",
-        strokeWidth: sw,
-        selectable:  false,
-        evented:     false,
-        _completed:  true,
-        _origX1:     x1,
-        _origY1:     y1,
-        _origX2:     x2,
-        _origY2:     y2,
-        _lengthPx:   item.length_px,
+        stroke:        colorForCategory(category),
+        strokeWidth:   sw,
+        selectable:    selectableNow,
+        evented:       selectableNow,
+        hasControls:   false,
+        lockMovementX: true,
+        lockMovementY: true,
+        lockRotation:  true,
+        lockScalingX:  true,
+        lockScalingY:  true,
+        _completed:    true,
+        _origX1:       x1,
+        _origY1:       y1,
+        _origX2:       x2,
+        _origY2:       y2,
+        _lengthPx:     item.length_px,
+        _category:     category,
       });
       canvas.add(ln);
     });
@@ -404,6 +602,13 @@
   // ─── マウスイベント ───────────────────────────────────────
   function onMouseDown(opt) {
     const e = opt.e;
+
+    if (mode === "select") {
+      // 選択モードでは新規描画・パンは行わない。
+      // 個別オブジェクトのクリック選択は Fabric.js のデフォルト挙動
+      // （各線の selectable/evented）に委ねる。
+      return;
+    }
 
     if (mode === "move") {
       isPanning = true;
@@ -423,7 +628,7 @@
     activePreviewLine = new fabric.Line(
       [drawStartX, drawStartY, drawStartX, drawStartY],
       {
-        stroke:      "#e63946",
+        stroke:      colorForCategory(currentCategory),
         strokeWidth: 2 / canvas.getZoom(),
         selectable:  false,
         evented:     false,
@@ -485,19 +690,29 @@
       // 3px 未満はクリック誤操作として破棄
       if (lengthPx < 3) return;
 
+      // 追加前の状態を保存（直近1操作Undo用）
+      captureUndoSnapshot();
+
       // 完了済み線を追加（ワールド座標で保存）
       const sw = 2 / canvas.getZoom();
       const completedLine = new fabric.Line([x1, y1, x2, y2], {
-        stroke:      "#e63946",
-        strokeWidth: sw,
-        selectable:  false,
-        evented:     false,
-        _completed:  true,
-        _origX1:     x1,
-        _origY1:     y1,
-        _origX2:     x2,
-        _origY2:     y2,
-        _lengthPx:   lengthPx,
+        stroke:        colorForCategory(currentCategory),
+        strokeWidth:   sw,
+        selectable:    false,
+        evented:       false,
+        hasControls:   false,
+        lockMovementX: true,
+        lockMovementY: true,
+        lockRotation:  true,
+        lockScalingX:  true,
+        lockScalingY:  true,
+        _completed:    true,
+        _origX1:       x1,
+        _origY1:       y1,
+        _origX2:       x2,
+        _origY2:       y2,
+        _lengthPx:     lengthPx,
+        _category:     currentCategory || null,
       });
       canvas.add(completedLine);
       canvas.requestRenderAll();
@@ -545,6 +760,14 @@
         y: wy * vt[3] + vt[5] + TOOLBAR_H,
       };
     },
+    /** 現在のモード ("line" | "move" | "select") */
+    getMode: () => mode,
+    /** 現在選択中のカテゴリ（次に描画する線へ適用される値） */
+    getCurrentCategory: () => currentCategory,
+    /** Undo が実行可能か */
+    isUndoAvailable: () => undoSnapshot !== null,
+    /** 「選択中を削除」ボタンが有効か */
+    isDeleteEnabled: () => !btnDeleteSelected.disabled,
   };
 
   // ─── Streamlit からの props を受信 ───────────────────────
@@ -556,12 +779,16 @@
       pageKey,
       canvasState,         // 保存済み状態 dict {page_key, viewport_transform, objects}
       canvasHeight: propsCanvasHeight,
+      categories:   propsCategories,   // A3-1: カテゴリ候補（唯一の正本は core.estimate_storage）
     } = args;
 
     // canvasHeight を props から明示的に設定
     if (propsCanvasHeight && propsCanvasHeight > 0) {
       canvasDisplayHeight = propsCanvasHeight;
     }
+
+    // カテゴリ候補を反映
+    populateCategories(propsCategories);
 
     // キャンバス未初期化なら初期化
     if (!canvas) {
@@ -577,6 +804,10 @@
       // 描画中状態のクリア
       if (activePreviewLine) { activePreviewLine = null; }
       isDrawing = false;
+
+      // Undo スナップショット・選択状態もページ切替でクリア（別ページの状態を誤って復元しない）
+      undoSnapshot = null;
+      updateUndoButtonState();
 
       // キャンバスをクリア（背景・直線を含む全オブジェクト）
       canvas.clear();

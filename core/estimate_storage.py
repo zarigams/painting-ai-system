@@ -6,6 +6,8 @@ canvas_states（Fabric.js手動計測キャンバスの状態）はJSON内の"ca
 saved_step・drawing_data・image_data・drawing_scale・original_paperの保存、および既存案件への
 安全な上書き保存（update_estimate）・保存済みファイルの読込（load_estimate_file）はA3-0b-3-1で追加
 （保存層のみ。session_stateへの復元・画面制御はA3-0b-3の別フェーズで対応）
+canvas_states内の各線オブジェクトへのcategory（積算属性、CANVAS_CATEGORIES）はA3-1で追加。
+省略時はNone（未分類）で後方互換（categoryフィールドの無い既存canvas_statesもそのまま読み込める）
 """
 from __future__ import annotations
 import hashlib
@@ -254,8 +256,19 @@ def save_estimate_files(company_id: str, estimate_id: str, materials: dict) -> d
 
 
 _CANVAS_PAGE_ALLOWED_KEYS = {"page_key", "viewport_transform", "objects"}
-_CANVAS_OBJECT_ALLOWED_KEYS = {"type", "orig_x1", "orig_y1", "orig_x2", "orig_y2", "length_px"}
+_CANVAS_OBJECT_ALLOWED_KEYS = {
+    "type", "orig_x1", "orig_y1", "orig_x2", "orig_y2", "length_px", "category",
+}
 _CANVAS_OBJECT_NUMERIC_KEYS = ("orig_x1", "orig_y1", "orig_x2", "orig_y2", "length_px")
+
+# A3-1: カテゴリは「色分け」ではなく積算属性として設計する（線の色はcategoryからの表示専用の派生値であり、
+# 保存データには含めない）。この一覧が唯一の正本であり、core/drawing_canvas/__init__.py はここから
+# CANVAS_CATEGORIESをimportしてフロントエンドへpropsとして渡す（フロント側にリストを二重管理させない）。
+CANVAS_CATEGORIES = (
+    "外壁", "軒天", "破風", "鼻隠し", "雨樋", "シャッターボックス",
+    "水切り", "幕板", "ベランダ床", "シーリング", "その他",
+)
+_CANVAS_CATEGORY_SET = set(CANVAS_CATEGORIES)
 
 
 def _sorted_key_reprs(keys) -> list[str]:
@@ -284,7 +297,11 @@ def _validate_and_normalize_canvas_states(canvas_states: dict) -> dict:
     許可するキーは以下のみ。未知・余分なキーが1件でも存在する場合は、
     黙って除外せず ValueError を送出して保存全体を失敗させる。
       - 各ページ value: "page_key", "viewport_transform", "objects"
-      - 各 line object: "type", "orig_x1", "orig_y1", "orig_x2", "orig_y2", "length_px"
+      - 各 line object: "type", "orig_x1", "orig_y1", "orig_x2", "orig_y2", "length_px", "category"
+
+    "category"はA3-1で追加したオプショナルキー（積算属性、線の色分けはこの値からの表示専用の派生）。
+    省略時はNone（未分類）として扱う。指定する場合はCANVAS_CATEGORIESに含まれる文字列のみを許可し、
+    それ以外（bool・未知の文字列・数値等）はValueErrorとする。
 
     期待する形式:
         {
@@ -295,7 +312,8 @@ def _validate_and_normalize_canvas_states(canvas_states: dict) -> dict:
                     {"type": "line",
                      "orig_x1": float, "orig_y1": float,
                      "orig_x2": float, "orig_y2": float,
-                     "length_px": float}（数値はいずれもbool不可・有限値のみ）,
+                     "length_px": float,（数値はいずれもbool不可・有限値のみ）
+                     "category": strまたは省略可（省略時はNone。指定時はCANVAS_CATEGORIESのいずれか）},
                     ...
                 ]
             },
@@ -371,6 +389,22 @@ def _validate_and_normalize_canvas_states(canvas_states: dict) -> dict:
                 normalized_obj[numeric_key] = _require_finite_number(
                     obj[numeric_key], f"{obj_label}.{numeric_key}"
                 )
+
+            # A3-1: category はオプショナル（省略時はNone=未分類）。指定時はCANVAS_CATEGORIESのみ許可。
+            if "category" in obj:
+                category_value = obj["category"]
+                if category_value is not None and (
+                    isinstance(category_value, bool)
+                    or not isinstance(category_value, str)
+                    or category_value not in _CANVAS_CATEGORY_SET
+                ):
+                    raise ValueError(
+                        f"{obj_label}.category が不正です（許可カテゴリ外）: {category_value!r}"
+                    )
+                normalized_obj["category"] = category_value
+            else:
+                normalized_obj["category"] = None
+
             normalized_objects.append(normalized_obj)
 
         normalized[page_key] = {

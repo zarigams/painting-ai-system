@@ -1347,3 +1347,129 @@ def test_load_estimate_file_rejects_missing_size_or_sha256():
     del file_meta_no_sha["sha256"]
     with pytest.raises(ValueError):
         es.load_estimate_file(file_meta_no_sha)
+
+
+# ═════════════════════════════════════════════════════════════════
+# A3-1: canvas_states の category（積算属性）検証・正規化・保存の検証
+#
+# 設計方針（project_a3_canvas_design.md「A3-1 実装スコープ確定」節を参照）:
+#   category は「色分け」ではなく線オブジェクトの積算属性であり、CANVAS_CATEGORIES
+#   （core.estimate_storage内で定義される唯一の正本）に含まれる文字列、または省略
+#   （＝未分類、Noneとして正規化）のみを許可する。color自体は保存データに含まれない。
+# ═════════════════════════════════════════════════════════════════
+
+def _valid_canvas_states_with_category(category="外壁") -> dict:
+    """_valid_canvas_states() と同形状だが、objects[0]にcategoryを含む版。"""
+    cs = _valid_canvas_states()
+    cs["abc123:p1"]["objects"][0]["category"] = category
+    return cs
+
+
+# ── CANVAS_CATEGORIES: 唯一の正本の内容確認 ──────────────────────
+def test_canvas_categories_contains_expected_11_values_in_order():
+    assert es.CANVAS_CATEGORIES == (
+        "外壁", "軒天", "破風", "鼻隠し", "雨樋", "シャッターボックス",
+        "水切り", "幕板", "ベランダ床", "シーリング", "その他",
+    )
+
+
+# ── 正常系: 許可された各カテゴリ値がそのまま保存・復元される ──────
+@pytest.mark.parametrize("category", [
+    "外壁", "軒天", "破風", "鼻隠し", "雨樋", "シャッターボックス",
+    "水切り", "幕板", "ベランダ床", "シーリング", "その他",
+])
+def test_save_estimate_stores_canvas_states_category_matching_input(category):
+    cs = _valid_canvas_states_with_category(category)
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        canvas_states=cs,
+    )
+    saved = es.load_estimate("nikko", eid)
+    assert saved["canvas_states"]["abc123:p1"]["objects"][0]["category"] == category
+    # categoryを指定しなかったp2側のobjectsは空リストのまま（影響なし）
+    assert saved["canvas_states"]["abc123:p2"]["objects"] == []
+
+
+# ── categoryが指定されているオブジェクトにcolorキーが含まれないこと ──
+def test_validate_and_normalize_canvas_states_does_not_add_color_key():
+    normalized = es._validate_and_normalize_canvas_states(_valid_canvas_states_with_category("外壁"))
+    obj = normalized["abc123:p1"]["objects"][0]
+    assert "color" not in obj
+    assert set(obj.keys()) == {"type", "orig_x1", "orig_y1", "orig_x2", "orig_y2", "length_px", "category"}
+
+
+# ── 省略時のデフォルト: categoryキーの無い既存形式のobjectはNone(未分類)になる ──
+def test_validate_and_normalize_canvas_states_defaults_category_to_none_when_omitted():
+    # _valid_canvas_states() はcategoryキーを含まない（A3-1以前の既存形式を再現）
+    normalized = es._validate_and_normalize_canvas_states(_valid_canvas_states())
+    obj = normalized["abc123:p1"]["objects"][0]
+    assert obj["category"] is None
+
+
+# ── 明示的にcategory: Noneを指定した場合も未分類として許可される ──
+def test_validate_and_normalize_canvas_states_accepts_explicit_none_category():
+    cs = _valid_canvas_states_with_category(None)
+    normalized = es._validate_and_normalize_canvas_states(cs)
+    assert normalized["abc123:p1"]["objects"][0]["category"] is None
+
+
+# ── 異常系: 許可カテゴリ外の文字列はValueError ────────────────────
+def test_validate_and_normalize_canvas_states_rejects_unknown_category_string():
+    cs = _valid_canvas_states_with_category("未知のカテゴリ")
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states(cs)
+
+
+# ── 異常系: category に数値・bool・list等の非文字列を渡すとValueError ──
+@pytest.mark.parametrize("bad_category", [123, 1.5, True, False, ["外壁"], {"x": 1}])
+def test_validate_and_normalize_canvas_states_rejects_non_string_category(bad_category):
+    cs = _valid_canvas_states_with_category(bad_category)
+    with pytest.raises(ValueError):
+        es._validate_and_normalize_canvas_states(cs)
+
+
+# ── 統合: save_estimate()経由でも不正categoryはValueError＋残骸なし ──
+def test_save_estimate_raises_valueerror_and_leaves_no_residue_when_category_invalid():
+    bad_cs = _valid_canvas_states_with_category("未知のカテゴリ")
+    with pytest.raises(ValueError):
+        es.save_estimate(
+            "nikko", PROJECT, QUANTITIES, ESTIMATION,
+            drawing_materials={"pdf": _pdf_bytes(), "photos": [_png_bytes()]},
+            canvas_states=bad_cs,
+        )
+    assert list((es._ESTIMATES_DIR / "nikko").glob("*.json")) == []
+    nikko_files_root = es._ESTIMATE_FILES_DIR / "nikko"
+    if nikko_files_root.exists():
+        assert list(nikko_files_root.iterdir()) == []
+
+
+# ── 後方互換: categoryキーの無い既存canvas_states JSONもそのまま読み込める ──
+def test_load_estimate_existing_canvas_states_without_category_key_still_loads():
+    """
+    A3-1より前に保存された（category未対応の）canvas_states JSONは、
+    line objectがcategoryキーを持たない。load_estimate()は保存時の正規化を
+    再実行しない単純なJSON読み込みであるため、そのようなobjectもそのまま
+    （categoryキー無しのまま）読み込めることを確認する。
+
+    注意: save_estimate() → _validate_and_normalize_canvas_states() は
+    常にcategoryキーを補完する（省略時はNone）ため、この観点は
+    save_estimate()経由では再現できない。そのため、A3-0b-2時代の
+    test_load_estimate_existing_json_without_canvas_states_key_still_loads()
+    と同様に、保存後のJSONを直接書き換えて旧形式を再現する。
+    """
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION,
+        canvas_states=_valid_canvas_states(),
+    )
+    json_path = es._ESTIMATES_DIR / "nikko" / f"{eid}.json"
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    # 保存直後はcategoryキーが補完されていること（前提確認）
+    assert "category" in data["canvas_states"]["abc123:p1"]["objects"][0]
+    # A3-1以前（category未対応）の形式を再現するため、意図的にキーを取り除く
+    del data["canvas_states"]["abc123:p1"]["objects"][0]["category"]
+    json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    loaded = es.load_estimate("nikko", eid)
+    assert loaded is not None
+    assert loaded["canvas_states"]["abc123:p1"]["objects"][0]["orig_x1"] == 1.0
+    assert "category" not in loaded["canvas_states"]["abc123:p1"]["objects"][0]
