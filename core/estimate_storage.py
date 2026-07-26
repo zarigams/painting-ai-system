@@ -8,6 +8,18 @@ saved_step・drawing_data・image_data・drawing_scale・original_paperの保存
 （保存層のみ。session_stateへの復元・画面制御はA3-0b-3の別フェーズで対応）
 canvas_states内の各線オブジェクトへのcategory（積算属性、CANVAS_CATEGORIES）はA3-1で追加。
 省略時はNone（未分類）で後方互換（categoryフィールドの無い既存canvas_statesもそのまま読み込める）
+
+test_baseline（AI初期値スナップショット、write-once）はtest_baseline機能で追加。
+- app.py は STEP2 の自動積算が成功した直後に build_test_baseline() を呼び出し、
+  その戻り値をそのまま st.session_state.test_baseline へ代入する
+  （build_test_baseline() 内部で ai_initial_quantities を直ちにJSON round-trip
+  複製するため、後続のquantities変更から独立している＝write-once実現の核）
+- save_estimate() のみが test_baseline を受け取り、新規保存時に一度だけ
+  _validate_test_baseline_for_storage() で再検証したうえで書き込む
+- update_estimate() は test_baseline 引数を持たない。既存JSONにキーが存在する場合のみ
+  そのままコピーし、存在しない場合は新JSONにもキー自体を追加しない（後付け禁止）
+- app.py側はStreamlitに依存しない should_create_test_baseline() / get_app_commit() を
+  呼び出して生成要否・app_commitを判定する（本モジュールはStreamlitへ依存しない）
 """
 from __future__ import annotations
 import hashlib
@@ -16,6 +28,7 @@ import math
 import os
 import re
 import shutil
+import subprocess
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -416,6 +429,362 @@ def _validate_and_normalize_canvas_states(canvas_states: dict) -> dict:
     return normalized
 
 
+# ─────────────────────────────────────────────────────────────
+# test_baseline（AI初期値スナップショット、write-once）
+# ─────────────────────────────────────────────────────────────
+# input_sources の許可値。「実際に解析処理が成功し、その結果が初期quantitiesの
+# 生成に使用されたソース」のみを記録する（試行しただけで失敗したものは含めない）。
+_TEST_BASELINE_INPUT_SOURCES = ("voice", "drawing_pdf", "floor_plan", "photos")
+
+# input_sources の要素 → prompt_versions / models のキーへの対応表。
+# 名称が一致しない（drawing_pdf→drawing、photos→photo）ため、単一のソースとして
+# ここに定義し、app.py側もこの対応表を経由する。
+_INPUT_SOURCE_TO_VERSION_KEY = {
+    "voice":       "voice",
+    "drawing_pdf": "drawing",
+    "floor_plan":  "floor_plan",
+    "photos":      "photo",
+}
+
+# prompt_versions の許可値（唯一の正本）。将来プロンプトを変更した場合はここを更新する。
+_PROMPT_VERSION_ALLOWED = {
+    "voice":      "voice_extractor_v1",
+    "drawing":    "drawing_analyzer_v1",
+    "floor_plan": "floor_plan_analyzer_v1",
+    "photo":      "image_analyzer_v1",
+}
+
+# models の許可値（唯一の正本）。
+# voice/photoは modules/llm_client.py の LLMClient.model、
+# drawing/floor_plan は core/drawing_analyzer.py の DrawingAnalyzer.model が実際の発生源であり、
+# 現状はどちらも "gpt-4o" だが定義箇所が独立しているため、単一のmodel文字列ではなく
+# ソースごとのdictとして記録する（どちらか一方だけ将来変更されても正しく記録できるようにするため）。
+_MODEL_ALLOWED = {
+    "voice":      "gpt-4o",
+    "drawing":    "gpt-4o",
+    "floor_plan": "gpt-4o",
+    "photo":      "gpt-4o",
+}
+
+_TEST_BASELINE_PIPELINE_VERSION = "legacy_analysis_v1"
+_TEST_BASELINE_RULE_VERSION = "NESESTYLE_rule_v1.0"
+
+# build_test_baseline() が返す正規化済みdict、および save_estimate() が
+# _validate_test_baseline_for_storage() で再検証するdictに要求するキー集合。
+_TEST_BASELINE_NORMALIZED_KEYS = {
+    "ai_initial_quantities", "app_commit", "models", "input_sources",
+    "pipeline_version", "prompt_versions", "rule_version",
+    "analysis_started_at", "analysis_completed_at",
+}
+
+_APP_COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
+_ISO8601_JST_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?\+09:00$"
+)
+
+
+def should_create_test_baseline(current_case_id, test_baseline, ai_analysis_used) -> bool:
+    """
+    test_baselineを新規生成してよいかを判定する（Streamlit非依存の純粋関数）。
+
+    Trueを返すのは次のすべてを満たす場合のみ:
+      - current_case_id が None（まだ一度も保存されていない新規案件）
+      - test_baseline が None（このセッションでまだ生成されていない）
+      - ai_analysis_used が真値（実際に成功して初期quantitiesへ寄与した
+        入力ソースが1件以上ある。呼び出し側は
+        `bool(successful_input_sources)` をそのまま渡すことを想定する）
+
+    いずれか1つでも満たさない場合はFalse（＝生成しない）。
+    これにより「既存案件（baselineの有無を問わない）への後付け」
+    「同一セッション内での再生成」「AI解析を使っていない手動経路での生成」を
+    すべて構造的に防ぐ。
+    """
+    return current_case_id is None and test_baseline is None and bool(ai_analysis_used)
+
+
+def _normalize_commit_candidate(value) -> str | None:
+    """
+    commit hash候補を strip・小文字化し、[0-9a-f]{7,40} に一致する場合のみ返す。
+    一致しない場合（None・空文字列・不正な形式等）は None を返す
+    （＝「この候補は使えない、次の取得手段へ進む」ことを示す）。
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if _APP_COMMIT_RE.fullmatch(normalized):
+        return normalized
+    return None
+
+
+def get_app_commit(secret_value=None, env_value=None, repo_root: Path | None = None) -> str:
+    """
+    app_commit（デプロイされているコードのgit commit hash相当）を取得する。
+    Streamlitへは一切依存しない（st.secrets等はapp.py側で取得し、引数として渡すこと）。
+
+    優先順位:
+      1. secret_value（呼び出し側がst.secrets.get("APP_COMMIT_SHA")等で取得した値）
+      2. env_value（呼び出し側がos.getenv("APP_COMMIT_SHA")等で取得した値）
+      3. `git rev-parse HEAD`（repo_root、未指定時はこのファイルの2階層上をリポジトリルートとみなす）
+      4. 上記いずれも取得できない場合は "unknown"
+
+    各候補は strip・小文字化のうえ [0-9a-f]{7,40} 形式であることを検証し、
+    不正な値（空文字列・形式不一致等）はその段階で採用せず次の手段へフォールバックする。
+    """
+    for candidate in (secret_value, env_value):
+        normalized = _normalize_commit_candidate(candidate)
+        if normalized:
+            return normalized
+
+    git_value = _get_app_commit_from_git(repo_root)
+    if git_value:
+        return git_value
+
+    return "unknown"
+
+
+def _get_app_commit_from_git(repo_root: Path | None = None) -> str | None:
+    """`git rev-parse HEAD` を安全に実行する。失敗時はNoneを返す（例外を送出しない）。"""
+    try:
+        cwd = repo_root if repo_root is not None else Path(__file__).parent.parent
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+        return _normalize_commit_candidate(result.stdout)
+    except Exception:
+        return None
+
+
+def _validate_test_baseline_core_fields(
+    ai_initial_quantities, app_commit, input_sources,
+    analysis_started_at, analysis_completed_at,
+):
+    """
+    test_baseline の「素材」フィールド5点（ai_initial_quantities・app_commit・
+    input_sources・analysis_started_at・analysis_completed_at）を検証する。
+    build_test_baseline() と _validate_test_baseline_for_storage() の共通ロジック
+    （検証規則を単一箇所にまとめ、二重実装によるズレを防ぐ）。
+
+    ai_initial_quantities は json.loads(json.dumps(...)) によりJSONとして独立した
+    コピーを作成して返す（呼び出し元が保持している元のdictへの参照を返さない。
+    呼び出し元が本関数の呼び出し後に元のdictをin-place変更しても、
+    戻り値には一切影響しない）。
+
+    戻り値: (normalized_quantities, app_commit, input_sources_list, started, completed)
+    不正な形式が見つかった場合は ValueError を送出する。
+    """
+    if not isinstance(ai_initial_quantities, dict):
+        raise ValueError(
+            f"test_baseline.ai_initial_quantities は dict である必要があります: "
+            f"{type(ai_initial_quantities)!r}"
+        )
+    try:
+        normalized_quantities = json.loads(json.dumps(ai_initial_quantities, ensure_ascii=False))
+    except (TypeError, ValueError) as e:
+        raise ValueError(
+            f"test_baseline.ai_initial_quantities をJSONへ変換できません: {e!r}"
+        ) from e
+
+    if not isinstance(app_commit, str) or not (
+        app_commit == "unknown" or _APP_COMMIT_RE.fullmatch(app_commit)
+    ):
+        raise ValueError(f"test_baseline.app_commit が不正です: {app_commit!r}")
+
+    if not isinstance(input_sources, list) or any(
+        not isinstance(s, str) for s in input_sources
+    ):
+        raise ValueError(
+            f"test_baseline.input_sources は str の list である必要があります: {input_sources!r}"
+        )
+    if len(set(input_sources)) != len(input_sources):
+        raise ValueError(f"test_baseline.input_sources に重複があります: {input_sources!r}")
+    unknown_sources = set(input_sources) - set(_TEST_BASELINE_INPUT_SOURCES)
+    if unknown_sources:
+        raise ValueError(
+            f"test_baseline.input_sources に未知の値があります: "
+            f"{_sorted_key_reprs(unknown_sources)}"
+        )
+
+    if not isinstance(analysis_started_at, str) or not _ISO8601_JST_RE.fullmatch(analysis_started_at):
+        raise ValueError(
+            f"test_baseline.analysis_started_at はJST付きISO8601形式である必要があります: "
+            f"{analysis_started_at!r}"
+        )
+    if not isinstance(analysis_completed_at, str) or not _ISO8601_JST_RE.fullmatch(analysis_completed_at):
+        raise ValueError(
+            f"test_baseline.analysis_completed_at はJST付きISO8601形式である必要があります: "
+            f"{analysis_completed_at!r}"
+        )
+    try:
+        started_dt = datetime.fromisoformat(analysis_started_at)
+        completed_dt = datetime.fromisoformat(analysis_completed_at)
+    except ValueError as e:
+        raise ValueError(f"test_baselineの時刻文字列を解析できません: {e!r}") from e
+    if completed_dt < started_dt:
+        raise ValueError(
+            f"test_baseline.analysis_completed_at が analysis_started_at より前です: "
+            f"completed={analysis_completed_at!r} started={analysis_started_at!r}"
+        )
+
+    return (
+        normalized_quantities, app_commit, list(input_sources),
+        analysis_started_at, analysis_completed_at,
+    )
+
+
+def _derive_models_and_prompt_versions(input_sources):
+    """input_sources から models・prompt_versions を導出する（唯一の導出経路）。"""
+    models = {}
+    prompt_versions = {}
+    for source in input_sources:
+        version_key = _INPUT_SOURCE_TO_VERSION_KEY[source]
+        models[version_key] = _MODEL_ALLOWED[version_key]
+        prompt_versions[version_key] = _PROMPT_VERSION_ALLOWED[version_key]
+    return models, prompt_versions
+
+
+def build_test_baseline(
+    ai_initial_quantities: dict,
+    input_sources: list,
+    app_commit: str,
+    analysis_started_at: str,
+    analysis_completed_at: str,
+) -> dict:
+    """
+    test_baseline を新規構築する（Streamlit非依存の純粋関数）。
+
+    app.py はSTEP2の自動積算（自動積算を実行する）が全ソースの解析・初期quantities
+    生成まで成功した直後、この関数の戻り値をそのまま st.session_state.test_baseline
+    へ代入すること。これにより session_state 上の test_baseline と保存JSONの
+    test_baseline は常に同一の構造・同一の値になる。
+
+    重要（write-once実現の核心部分）: ai_initial_quantities は本関数の内部で直ちに
+    json.loads(json.dumps(...)) によりJSONとして独立したコピーを作成する。
+    呼び出し元（app.py）がこの関数を呼び出した「後」に、元のquantities dict
+    （またはst.session_state.quantities）を再計算・幾何学計算値の反映・
+    数量確認フォームでの編集等によりin-place変更しても、本関数が返したdict
+    （および代入先のsession_state.test_baseline）は一切影響を受けない。
+    そのため、この関数は「quantitiesが将来変更される可能性がある」タイミングでは
+    なく、値が確定した瞬間（もしくはそれ以前）に呼び出しさえすれば安全である。
+
+    models・prompt_versions・pipeline_version・rule_version はinput_sourcesから
+    導出し、呼び出し側に二重計算・二重指定させない。
+
+    不正な形式が見つかった場合は ValueError を送出する（部分的な結果は返さない。
+    呼び出し元はこの場合 st.session_state.test_baseline へ代入してはならない）。
+    """
+    (
+        normalized_quantities, normalized_app_commit, normalized_input_sources,
+        started, completed,
+    ) = _validate_test_baseline_core_fields(
+        ai_initial_quantities=ai_initial_quantities,
+        app_commit=app_commit,
+        input_sources=input_sources,
+        analysis_started_at=analysis_started_at,
+        analysis_completed_at=analysis_completed_at,
+    )
+    models, prompt_versions = _derive_models_and_prompt_versions(normalized_input_sources)
+
+    return {
+        "ai_initial_quantities": normalized_quantities,
+        "app_commit":            normalized_app_commit,
+        "models":                models,
+        "input_sources":         normalized_input_sources,
+        "pipeline_version":      _TEST_BASELINE_PIPELINE_VERSION,
+        "prompt_versions":       prompt_versions,
+        "rule_version":          _TEST_BASELINE_RULE_VERSION,
+        "analysis_started_at":   started,
+        "analysis_completed_at": completed,
+    }
+
+
+def _validate_test_baseline_for_storage(test_baseline: dict) -> dict:
+    """
+    save_estimate() 内部専用の防御的な再検証。
+
+    build_test_baseline() が既に正規化した9キーのdict（session_state.test_baseline
+    と同一の構造）を入力として受け取り、以下を確認したうえで、入力から独立した
+    新しいdictを構築して返す（入力dictを変更せず、戻り値は入力dictへの参照も
+    一切保持しない）:
+
+      - キー集合が正規化済みの9キーとちょうど一致すること（未知キー・不足キーは
+        いずれもエラー）
+      - ai_initial_quantities・app_commit・input_sources・
+        analysis_started_at/analysis_completed_at が build_test_baseline() と
+        同一の検証規則を満たすこと（ai_initial_quantitiesはここでも念のため
+        再度JSON round-tripで独立コピーする）
+      - models・prompt_versions・pipeline_version・rule_version が、
+        input_sourcesから導出される期待値と完全に一致すること
+        （改ざん・不整合の検出。例えばinput_sourcesに含まれないソースの
+        modelsキーが紛れ込んでいる、pipeline_versionが書き換えられている等を検出する）
+
+    不正な場合は ValueError を送出する。
+    """
+    if not isinstance(test_baseline, dict):
+        raise ValueError(f"test_baseline は dict である必要があります: {type(test_baseline)!r}")
+
+    unknown_keys = set(test_baseline.keys()) - _TEST_BASELINE_NORMALIZED_KEYS
+    if unknown_keys:
+        raise ValueError(
+            f"test_baseline に未知のキーがあります: {_sorted_key_reprs(unknown_keys)}"
+        )
+    missing_keys = _TEST_BASELINE_NORMALIZED_KEYS - set(test_baseline.keys())
+    if missing_keys:
+        raise ValueError(
+            f"test_baseline に必須キーが不足しています: {_sorted_key_reprs(missing_keys)}"
+        )
+
+    (
+        normalized_quantities, normalized_app_commit, normalized_input_sources,
+        started, completed,
+    ) = _validate_test_baseline_core_fields(
+        ai_initial_quantities=test_baseline["ai_initial_quantities"],
+        app_commit=test_baseline["app_commit"],
+        input_sources=test_baseline["input_sources"],
+        analysis_started_at=test_baseline["analysis_started_at"],
+        analysis_completed_at=test_baseline["analysis_completed_at"],
+    )
+    expected_models, expected_prompt_versions = _derive_models_and_prompt_versions(
+        normalized_input_sources
+    )
+
+    if test_baseline.get("models") != expected_models:
+        raise ValueError(
+            f"test_baseline.models が input_sources から導出される値と一致しません: "
+            f"実際={test_baseline.get('models')!r} 期待={expected_models!r}"
+        )
+    if test_baseline.get("prompt_versions") != expected_prompt_versions:
+        raise ValueError(
+            f"test_baseline.prompt_versions が input_sources から導出される値と一致しません: "
+            f"実際={test_baseline.get('prompt_versions')!r} 期待={expected_prompt_versions!r}"
+        )
+    if test_baseline.get("pipeline_version") != _TEST_BASELINE_PIPELINE_VERSION:
+        raise ValueError(
+            f"test_baseline.pipeline_version が不正です: {test_baseline.get('pipeline_version')!r}"
+        )
+    if test_baseline.get("rule_version") != _TEST_BASELINE_RULE_VERSION:
+        raise ValueError(
+            f"test_baseline.rule_version が不正です: {test_baseline.get('rule_version')!r}"
+        )
+
+    return {
+        "ai_initial_quantities": normalized_quantities,
+        "app_commit":            normalized_app_commit,
+        "models":                expected_models,
+        "input_sources":         normalized_input_sources,
+        "pipeline_version":      _TEST_BASELINE_PIPELINE_VERSION,
+        "prompt_versions":       expected_prompt_versions,
+        "rule_version":          _TEST_BASELINE_RULE_VERSION,
+        "analysis_started_at":   started,
+        "analysis_completed_at": completed,
+    }
+
+
 _SAVED_STEP_MIN = 1
 _SAVED_STEP_MAX = 5
 
@@ -443,12 +812,24 @@ def save_estimate(company_id: str, project: dict, quantities: dict,
                   drawing_data: dict | None = None,
                   image_data: dict | None = None,
                   drawing_scale: str | None = None,
-                  original_paper: str | None = None) -> str:
+                  original_paper: str | None = None,
+                  test_baseline: dict | None = None) -> str:
     """
     見積りデータをJSONに保存する。drawing_materials が渡された場合は図面等の実体ファイルも
     data/estimate_files/{company_id}/{estimate_id}/ へ保存する。
     canvas_states が渡された場合は検証・正規化のうえJSON内へそのまま保存する（A3-0b-2）。
     未指定時は null ではなく空dict {} を保存する。
+
+    test_baseline が渡された場合、それは呼び出し側（app.py）が既に
+    build_test_baseline() で正規化済みの9キーdictであることを前提とし、
+    _validate_test_baseline_for_storage() でさらに防御的に再検証したうえで保存する
+    （write-once）。この関数（save_estimate）は新規estimate_id発行時にしか呼ばれない
+    ため、test_baselineの「初回だけ書き込む」という制約は update_estimate() に
+    test_baseline引数を持たせない設計によって満たされる
+    （save_estimateはそもそも新規案件専用であり、常に「初回」として扱ってよい）。
+    未指定時（None）は"test_baseline": null として保存する。
+    不正な形式の場合はValueErrorを送出し、既存のcleanup経路（このsave_estimate()呼び出しが
+    新規作成した分のみを削除）がそのまま機能する。
 
     A3-0b-1では新規保存のみを対象とする：
       - estimate_id は毎回新規発行（上書きは行わない）
@@ -502,6 +883,10 @@ def save_estimate(company_id: str, project: dict, quantities: dict,
         if saved_step is not None:
             normalized_saved_step = _validate_saved_step(saved_step)
 
+        normalized_test_baseline = None
+        if test_baseline is not None:
+            normalized_test_baseline = _validate_test_baseline_for_storage(test_baseline)
+
         data = {
             "id":                    estimate_id,
             "created_at":            created_at,
@@ -517,6 +902,7 @@ def save_estimate(company_id: str, project: dict, quantities: dict,
             "image_data":            image_data,
             "drawing_scale":         drawing_scale,
             "original_paper":        original_paper,
+            "test_baseline":         normalized_test_baseline,
         }
         json_text = json.dumps(data, ensure_ascii=False, indent=2)
         json_path.write_text(json_text, encoding="utf-8")
@@ -584,6 +970,13 @@ def update_estimate(company_id: str, estimate_id: str, project: dict, quantities
     このモジュールでは .tmp-*・.bak-* の自動削除・自動復旧（前回の異常終了分の後始末）は行わない。
     想定外の状態（例：本番パスと衝突する一時/バックアップパスが既に存在する等）を検出した場合は、
     既存案件を一切変更せずエラーで停止する。
+
+    test_baseline（write-once）: この関数はtest_baseline引数を一切持たない。
+    既存JSON（existing_data）に"test_baseline"キーが存在する場合のみ、その値を
+    そのまま新JSONへコピーする。既存JSONにキー自体が存在しない場合は、
+    新JSONにもキーを一切追加しない（後付けしない）。これにより、
+    どのような呼び出し方をしても既存のtest_baselineが上書き・後付けされることは
+    構造的に発生しない。
 
     Returns: None
     """
@@ -669,6 +1062,12 @@ def update_estimate(company_id: str, estimate_id: str, project: dict, quantities
             "drawing_scale":         drawing_scale,
             "original_paper":        original_paper,
         }
+        # test_baseline（write-once）: 既存JSONにキーが存在する場合のみ、そのままコピーする。
+        # 引数として受け取らず、新規に生成・上書きすることは一切行わない。
+        # 既存JSONにキー自体が無ければ、新JSONにもキーを追加しない（後付け禁止）。
+        if "test_baseline" in existing_data:
+            new_data["test_baseline"] = existing_data["test_baseline"]
+
         json_text = json.dumps(new_data, ensure_ascii=False, indent=2)
         json_bytes = json_text.encode("utf-8")
 

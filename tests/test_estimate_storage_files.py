@@ -1473,3 +1473,274 @@ def test_load_estimate_existing_canvas_states_without_category_key_still_loads()
     assert loaded is not None
     assert loaded["canvas_states"]["abc123:p1"]["objects"][0]["orig_x1"] == 1.0
     assert "category" not in loaded["canvas_states"]["abc123:p1"]["objects"][0]
+
+
+# ═══════════════════════════════════════════════════════════════
+# test_baseline（AI初期値スナップショット、write-once）の検証
+#
+# ここで組み立てるtest_baselineは build_test_baseline()（Streamlit非依存の
+# 構築関数。app.pyがSTEP2の自動積算成功直後に呼び出し、その戻り値をそのまま
+# st.session_state.test_baseline へ代入する想定）が返す、正規化済み9キーdict
+# である。build_test_baseline() 自体が受け付ける「素材」フィールド
+# （ai_initial_quantities・app_commit・input_sources・analysis_started_at/
+# completed_at）に対する検証・独立deep copyの確認は
+# tests/test_test_baseline.py 側で行う（build_test_baseline()を直接呼ぶ）。
+#
+# このファイルでは、save_estimate()内部の防御的な再検証
+# （_validate_test_baseline_for_storage）・write-once（update_estimateとの
+# 関係）・保存/読込の統合的な挙動のみを検証する。異常系テストは、
+# 正常なtest_baseline dict（build_test_baseline()の戻り値）を直接タンパリング
+# （改ざん）することで、save_estimate()側の防御層が単独でも機能することを
+# 確認する構成とする。
+# ═══════════════════════════════════════════════════════════════
+
+def _valid_test_baseline(
+    input_sources=("voice", "drawing_pdf"),
+    quantities=None,
+    app_commit="0123456789abcdef0123456789abcdef01234567",
+    started="2026-07-25T10:00:00+09:00",
+    completed="2026-07-25T10:00:30+09:00",
+):
+    """build_test_baseline() を経由して、save_estimate() へそのまま渡せる
+    正規化済み9キーdictを構築するテスト用ヘルパー。"""
+    return es.build_test_baseline(
+        ai_initial_quantities=quantities if quantities is not None else {"wall_area": 100.0},
+        input_sources=list(input_sources),
+        app_commit=app_commit,
+        analysis_started_at=started,
+        analysis_completed_at=completed,
+    )
+
+
+# ── 正常系: 成功した入力ソースのみのtest_baselineがそのまま保存される ──
+def test_save_estimate_stores_test_baseline_with_derived_models_and_prompt_versions():
+    tb = _valid_test_baseline(input_sources=["voice", "photos"])
+    eid = es.save_estimate(
+        "nikko", PROJECT, QUANTITIES, ESTIMATION, test_baseline=tb,
+    )
+    saved = es.load_estimate("nikko", eid)
+    tb_saved = saved["test_baseline"]
+    assert tb_saved["input_sources"] == ["voice", "photos"]
+    assert tb_saved["models"] == {"voice": "gpt-4o", "photo": "gpt-4o"}
+    assert tb_saved["prompt_versions"] == {
+        "voice": "voice_extractor_v1", "photo": "image_analyzer_v1",
+    }
+    assert tb_saved["pipeline_version"] == "legacy_analysis_v1"
+    assert tb_saved["rule_version"] == "NESESTYLE_rule_v1.0"
+    assert tb_saved["app_commit"] == tb["app_commit"]
+    assert tb_saved["ai_initial_quantities"] == {"wall_area": 100.0}
+
+
+# ── 未指定時: test_baselineはnull（None）で保存される ──
+def test_save_estimate_without_test_baseline_stores_null():
+    eid = es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION)
+    saved = es.load_estimate("nikko", eid)
+    assert saved["test_baseline"] is None
+
+
+# ── deep copy: save_estimate()呼び出し後に、build_test_baseline()へ渡した元の
+# dictや、build_test_baseline()の戻り値（session_state.test_baseline相当）を
+# in-place変更しても、保存済みJSONは一切影響を受けない
+# （build_test_baseline()時点の独立コピーに加え、save_estimate()内部の
+# _validate_test_baseline_for_storage()でも再度独立コピーする二重の安全策の確認。
+# build_test_baseline()単体でのdeep copy確認はtests/test_test_baseline.py側で
+# より直接的に検証している） ──
+def test_test_baseline_ai_initial_quantities_is_independent_deep_copy_through_save():
+    original_quantities = {"wall_area": 100.0, "nested": {"a": 1}}
+    tb = _valid_test_baseline(quantities=original_quantities)
+    eid = es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION, test_baseline=tb)
+
+    # 保存後に、元のquantities dict・build_test_baseline()の戻り値tb自体の
+    # 両方をin-place変更する
+    original_quantities["wall_area"] = 999.0
+    original_quantities["nested"]["a"] = 999
+    tb["ai_initial_quantities"]["wall_area"] = 888.0
+
+    saved = es.load_estimate("nikko", eid)
+    assert saved["test_baseline"]["ai_initial_quantities"] == {"wall_area": 100.0, "nested": {"a": 1}}
+
+
+# ── update_estimate: 既存test_baselineを完全に維持する ──
+def test_update_estimate_preserves_existing_test_baseline_unchanged():
+    tb = _valid_test_baseline()
+    eid = es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION, test_baseline=tb)
+    before = es.load_estimate("nikko", eid)["test_baseline"]
+
+    es.update_estimate(
+        "nikko", eid, PROJECT, {"wall_area": 200.0}, {"total": 999999},
+    )
+    after = es.load_estimate("nikko", eid)["test_baseline"]
+    assert after == before
+
+
+# ── update_estimateはtest_baseline引数を持たない（呼び出し可能なシグネチャの確認） ──
+def test_update_estimate_signature_has_no_test_baseline_parameter():
+    import inspect
+    params = inspect.signature(es.update_estimate).parameters
+    assert "test_baseline" not in params, (
+        "update_estimate() は test_baseline 引数を持たない設計です"
+    )
+
+
+# ── baselineなし旧案件をupdate_estimateしても、test_baselineキーが新規追加されない ──
+def test_update_estimate_does_not_backfill_test_baseline_for_old_case():
+    eid = es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION)  # test_baseline未指定
+    json_path = es._ESTIMATES_DIR / "nikko" / f"{eid}.json"
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert "test_baseline" in data  # save_estimateはキー自体は作る（値はNone）
+
+    # 「test_baselineキー自体が無い、さらに古い案件」を模擬するため、キーごと削除する
+    del data["test_baseline"]
+    json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    es.update_estimate("nikko", eid, PROJECT, {"wall_area": 200.0}, {"total": 999999})
+
+    after = json.loads(json_path.read_text(encoding="utf-8"))
+    assert "test_baseline" not in after, (
+        "test_baselineキーの無い旧案件をupdate_estimateしても、キーを新規追加してはいけません"
+    )
+
+
+# ── 後方互換: test_baselineキーの無い旧案件がload_estimateでそのまま読み込める ──
+def test_load_estimate_existing_json_without_test_baseline_key_still_loads():
+    eid = es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION)
+    json_path = es._ESTIMATES_DIR / "nikko" / f"{eid}.json"
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    del data["test_baseline"]
+    json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    loaded = es.load_estimate("nikko", eid)
+    assert loaded is not None
+    assert "test_baseline" not in loaded
+
+
+# ── 異常系: 未知キーを拒否する（build_test_baseline()の戻り値をタンパリング） ──
+def test_save_estimate_rejects_test_baseline_with_unknown_key():
+    tb = _valid_test_baseline()
+    tb["unexpected_key"] = "value"
+    with pytest.raises(ValueError):
+        es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION, test_baseline=tb)
+    assert list((es._ESTIMATES_DIR / "nikko").glob("*.json")) == []
+
+
+# ── 異常系: 必須キー欠落を拒否する（正規化済み9キーのいずれかを削除） ──
+@pytest.mark.parametrize("missing_key", [
+    "ai_initial_quantities", "app_commit", "models", "input_sources",
+    "pipeline_version", "prompt_versions", "rule_version",
+    "analysis_started_at", "analysis_completed_at",
+])
+def test_save_estimate_rejects_test_baseline_with_missing_key(missing_key):
+    tb = _valid_test_baseline()
+    del tb[missing_key]
+    with pytest.raises(ValueError):
+        es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION, test_baseline=tb)
+
+
+# ── 異常系: 許可外のinput_sources値を拒否する（タンパリング） ──
+def test_save_estimate_rejects_test_baseline_with_unknown_input_source():
+    tb = _valid_test_baseline()
+    tb["input_sources"] = ["voice", "unknown_source"]
+    with pytest.raises(ValueError):
+        es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION, test_baseline=tb)
+    assert list((es._ESTIMATES_DIR / "nikko").glob("*.json")) == []
+
+
+# ── 異常系: input_sourcesの重複を拒否する（タンパリング） ──
+def test_save_estimate_rejects_test_baseline_with_duplicate_input_sources():
+    tb = _valid_test_baseline()
+    tb["input_sources"] = ["voice", "voice"]
+    with pytest.raises(ValueError):
+        es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION, test_baseline=tb)
+
+
+# ── 異常系: app_commitの形式不正を拒否する（タンパリング） ──
+@pytest.mark.parametrize("bad_commit", ["", "not-hex-zzz", "123", 12345, None, True])
+def test_save_estimate_rejects_test_baseline_with_invalid_app_commit(bad_commit):
+    tb = _valid_test_baseline()
+    tb["app_commit"] = bad_commit
+    with pytest.raises(ValueError):
+        es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION, test_baseline=tb)
+
+
+# ── 正常系: app_commitが"unknown"であることも許可される ──
+def test_save_estimate_accepts_unknown_app_commit():
+    tb = _valid_test_baseline(app_commit="unknown")
+    eid = es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION, test_baseline=tb)
+    saved = es.load_estimate("nikko", eid)
+    assert saved["test_baseline"]["app_commit"] == "unknown"
+
+
+# ── 異常系: 時刻形式の不正を拒否する（タンパリング） ──
+@pytest.mark.parametrize("bad_time", [
+    "2026-07-25 10:00:00+09:00",     # Tが無い
+    "2026-07-25T10:00:00",           # タイムゾーンが無い
+    "2026-07-25T10:00:00+00:00",     # JSTではない
+    "not-a-timestamp",
+    12345,
+    None,
+])
+def test_save_estimate_rejects_test_baseline_with_invalid_time_format(bad_time):
+    tb = _valid_test_baseline()
+    tb["analysis_started_at"] = bad_time
+    with pytest.raises(ValueError):
+        es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION, test_baseline=tb)
+
+
+# ── 異常系: analysis_completed_at が analysis_started_at より前の場合を拒否する（タンパリング） ──
+def test_save_estimate_rejects_test_baseline_with_completed_before_started():
+    tb = _valid_test_baseline()
+    tb["analysis_started_at"], tb["analysis_completed_at"] = (
+        tb["analysis_completed_at"], tb["analysis_started_at"],
+    )
+    # 元の値が同時刻でないことを前提とする（started < completed だったものを入れ替える）
+    with pytest.raises(ValueError):
+        es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION, test_baseline=tb)
+
+
+# ── タンパリング検出: models が input_sources から導出される値と不一致 ──
+def test_save_estimate_rejects_test_baseline_with_models_inconsistent_with_input_sources():
+    tb = _valid_test_baseline(input_sources=["voice"])
+    # input_sourcesには無い"photo"のmodelsエントリを紛れ込ませる
+    tb["models"] = dict(tb["models"], photo="gpt-4o")
+    with pytest.raises(ValueError):
+        es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION, test_baseline=tb)
+
+
+# ── タンパリング検出: prompt_versions が input_sources から導出される値と不一致 ──
+def test_save_estimate_rejects_test_baseline_with_prompt_versions_inconsistent_with_input_sources():
+    tb = _valid_test_baseline(input_sources=["voice"])
+    tb["prompt_versions"] = dict(tb["prompt_versions"], photo="image_analyzer_v1")
+    with pytest.raises(ValueError):
+        es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION, test_baseline=tb)
+
+
+# ── タンパリング検出: pipeline_version が書き換えられている ──
+def test_save_estimate_rejects_test_baseline_with_wrong_pipeline_version():
+    tb = _valid_test_baseline()
+    tb["pipeline_version"] = "tampered_v9"
+    with pytest.raises(ValueError):
+        es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION, test_baseline=tb)
+
+
+# ── タンパリング検出: rule_version が書き換えられている ──
+def test_save_estimate_rejects_test_baseline_with_wrong_rule_version():
+    tb = _valid_test_baseline()
+    tb["rule_version"] = "tampered_v9"
+    with pytest.raises(ValueError):
+        es.save_estimate("nikko", PROJECT, QUANTITIES, ESTIMATION, test_baseline=tb)
+
+
+# ── 異常系: 未知キー時に既存の残骸なしcleanup経路がそのまま機能する（drawing_materials併用） ──
+def test_save_estimate_raises_and_leaves_no_residue_when_test_baseline_invalid():
+    tb = _valid_test_baseline()
+    tb["unexpected_key"] = "value"
+    with pytest.raises(ValueError):
+        es.save_estimate(
+            "nikko", PROJECT, QUANTITIES, ESTIMATION,
+            drawing_materials={"pdf": _pdf_bytes(), "photos": [_png_bytes()]},
+            test_baseline=tb,
+        )
+    assert list((es._ESTIMATES_DIR / "nikko").glob("*.json")) == []
+    nikko_files_root = es._ESTIMATE_FILES_DIR / "nikko"
+    if nikko_files_root.exists():
+        assert list(nikko_files_root.iterdir()) == []

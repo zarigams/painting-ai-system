@@ -3,12 +3,16 @@
 4ステップフロー: 案件情報 → AI解析 → 数量確認 → 見積書出力
 """
 
+import os
 import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import streamlit as st
+
+_JST = ZoneInfo("Asia/Tokyo")
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -262,6 +266,8 @@ DEFAULTS = {
     "theme":                 "スタンダード",
     "step3_drawing_files":   [],
     "current_case_id":       None,
+    "test_baseline":         None,
+    "test_baseline_unavailable": False,
 }
 for _k, _v in DEFAULTS.items():
     if _k not in st.session_state:
@@ -285,6 +291,13 @@ CASE_RESET_KEYS = [
     "_voice_gpt_raw", "_3d_gpt_raw", "_3d_trace_png",
     # A3-0b-1で追加（STEP3追加図面のsession_stateコピー。current_case_idは未導入）
     "step3_drawing_files",
+    # test_baseline機能で追加。current_case_idと異なりCASE_RESET_KEYSに含める
+    # （＝「最初からやり直す」「新しい案件を作成」の両方で削除→DEFAULTSでNoneへ戻る。
+    # これにより新規案件開始時の未設定初期化・やり直し時の削除を同時に満たす）
+    "test_baseline",
+    # test_baseline構築失敗時の警告表示フラグ。test_baseline本体と同じライフサイクル
+    # （新規案件開始・やり直しでFalseに戻す）で管理する。
+    "test_baseline_unavailable",
 ]
 
 # ─────────────────────────────────────────────────────────────
@@ -383,6 +396,11 @@ with st.sidebar:
                                 st.session_state.estimation_sheet_data = _ed["estimation_sheet_data"]
                             if _ed.get("canvas_states"):
                                 st.session_state.canvas_states = _ed["canvas_states"]
+                            # test_baseline: 保存済みJSONにキーがあれば復元する（write-once）。
+                            # キーが無い旧案件は復元せず、CASE_RESET_KEYSクリア直後のNoneのまま
+                            # （＝未設定のまま。ここで新規生成は一切行わない）。
+                            if _ed.get("test_baseline"):
+                                st.session_state.test_baseline = _ed["test_baseline"]
                             if _ed.get("drawing_data"):
                                 st.session_state.drawing_data = _ed["drawing_data"]
                             if _ed.get("image_data"):
@@ -917,6 +935,11 @@ if st.session_state.step == 1:
 # ═════════════════════════════════════════════════════════════
 elif st.session_state.step == 2:
     st.header("② AI自動積算")
+    if st.session_state.get("test_baseline_unavailable"):
+        st.warning(
+            "この案件はtest_baseline（AI初期値の記録）の生成に失敗したため、"
+            "テストデータとして使用できません。通常の見積り作成は続行できます。"
+        )
     proj       = st.session_state.project
     voice_text = (proj.get("voice_memo") or "").strip()
     has_voice  = bool(voice_text)
@@ -1023,6 +1046,12 @@ elif st.session_state.step == 2:
             log_ui("自動積算実行ボタン", {"has_voice": has_voice, "has_pdf": has_pdf, "has_photos": has_photos})
             with st.spinner("AIが音声・資料から数量を抽出中…（30秒〜1分程度）"):
                 try:
+                    # test_baseline: 解析開始直前の時刻とソース成功状況の追跡を開始する
+                    # （途中で例外が発生した場合はこのtry節を抜けてしまうため、
+                    #   test_baselineは一切生成されない＝解析失敗時は作成しないという要件を満たす）
+                    _analysis_started_at = datetime.now(_JST).isoformat()
+                    successful_input_sources = []
+
                     from modules.llm_client import LLMClient
                     from core.voice_extractor import extract_quantities, build_quantities
                     llm = LLMClient()
@@ -1035,6 +1064,8 @@ elif st.session_state.step == 2:
                         extras     = result["extras"]
                         raw        = result["raw"]
                         st.session_state["_voice_gpt_raw"] = result.get("_gpt_raw_text", "")
+                        # ここに到達した時点で音声解析は例外なく成功している
+                        successful_input_sources.append("voice")
                     else:
                         # 音声なし（図面/写真のみ）→ 経験則のベース dict から開始
                         quantities = build_quantities({})
@@ -1073,6 +1104,8 @@ elif st.session_state.step == 2:
                             }
                         # ──────────────────────────────────────────────────────────
                         quantities = _merge_drawing(quantities, drawing_data, annotations)
+                        # ここに到達した時点で図面解析は例外なく成功している
+                        successful_input_sources.append("drawing_pdf")
 
                     if "floor_plan_bytes" in st.session_state:
                         try:
@@ -1104,6 +1137,10 @@ elif st.session_state.step == 2:
                                 if _fp_w and not quantities.get("wall_area"):
                                     quantities["scaffold_area"] = round(float(_fp_w) * 1.1, 1)
                                 st.info(f"📐 平面図解析完了: 幅{_fp_data.get('total_width','?')}m × 奥行{_fp_data.get('total_depth','?')}m")
+                                # 平面図解析が成功（"error"キーが無い）した場合のみ記録する。
+                                # この分岐の外（else節・except節）ではsuccessful_input_sourcesへ
+                                # 追加する経路は存在しない。
+                                successful_input_sources.append("floor_plan")
                             else:
                                 st.warning(f"平面図解析エラー: {_fp_data.get('error')}")
                         except Exception as _fp_e:
@@ -1116,6 +1153,8 @@ elif st.session_state.step == 2:
                         image_data = ia.analyze(st.session_state.photo_bytes_list, desc)
                         st.session_state.image_data = image_data
                         quantities = _merge_photo(quantities, image_data)
+                        # ここに到達した時点で写真解析は例外なく成功している
+                        successful_input_sources.append("photos")
 
                     # extra_options（工事オプション欄）で上書き
                     eo = st.session_state.get("extra_options", {})
@@ -1148,6 +1187,50 @@ elif st.session_state.step == 2:
                         sales_rep=proj.get("sales_rep", ""),
                     )
                     st.session_state.auto_done = True
+
+                    # ── test_baseline（AI初期値スナップショット、write-once） ──────────
+                    # ここに到達した時点で、全解析処理・初期quantities生成が例外なく
+                    # 正常終了している（途中で例外が出ていればこのtry節を抜けており到達しない）。
+                    from core.estimate_storage import (
+                        should_create_test_baseline,
+                        get_app_commit,
+                        build_test_baseline,
+                    )
+                    _ai_analysis_used = bool(successful_input_sources)
+                    if should_create_test_baseline(
+                        current_case_id=st.session_state.get("current_case_id"),
+                        test_baseline=st.session_state.get("test_baseline"),
+                        ai_analysis_used=_ai_analysis_used,
+                    ):
+                        try:
+                            try:
+                                _secret_commit = st.secrets.get("APP_COMMIT_SHA")
+                            except Exception:
+                                _secret_commit = None
+                            _app_commit = get_app_commit(
+                                secret_value=_secret_commit,
+                                env_value=os.getenv("APP_COMMIT_SHA"),
+                            )
+                            _analysis_completed_at = datetime.now(_JST).isoformat()
+                            # build_test_baseline() が内部で ai_initial_quantities を直ちに
+                            # JSON round-tripで独立複製するため、この代入以降に quantities
+                            # （またはst.session_state.quantities）がin-place変更されても
+                            # st.session_state.test_baseline は一切影響を受けない。
+                            st.session_state.test_baseline = build_test_baseline(
+                                ai_initial_quantities=quantities,
+                                input_sources=successful_input_sources,
+                                app_commit=_app_commit,
+                                analysis_started_at=_analysis_started_at,
+                                analysis_completed_at=_analysis_completed_at,
+                            )
+                        except Exception as _tb_e:
+                            # test_baseline生成に失敗しても、通常の自動積算結果は
+                            # 既に確定済みのためユーザー操作は継続させる（エラーはログのみ）。
+                            # ただしこの案件はテストデータとして使用できないため、
+                            # UI側で常時警告表示するためのフラグを立てる。
+                            st.session_state.test_baseline_unavailable = True
+                            log_error("test_baseline生成エラー", _tb_e, "FILE")
+
                     log_ui("自動積算完了", {
                         "wall_area": quantities.get("wall_area"),
                         "roof_area": quantities.get("roof_area"),
@@ -3066,6 +3149,11 @@ elif st.session_state.step == 4:
 # ═════════════════════════════════════════════════════════════
 elif st.session_state.step == 5:
     st.header("⑤ 見積書完成")
+    if st.session_state.get("test_baseline_unavailable"):
+        st.warning(
+            "この案件はtest_baseline（AI初期値の記録）の生成に失敗したため、"
+            "テストデータとして使用できません。通常の見積り保存は続行できます。"
+        )
 
     proj       = st.session_state.project
     estimation = st.session_state.estimation
@@ -3269,6 +3357,7 @@ elif st.session_state.step == 5:
                     image_data=st.session_state.get("image_data"),
                     drawing_scale=st.session_state.get("drawing_scale"),
                     original_paper=st.session_state.get("original_paper"),
+                    test_baseline=st.session_state.get("test_baseline"),
                 )
                 st.session_state.current_case_id = _eid
                 st.session_state["_case_save_flash"] = "✅ 案件を保存しました"
