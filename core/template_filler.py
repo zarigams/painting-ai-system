@@ -119,8 +119,12 @@ def fill_standard_template(
         ws_quote["H8"] = sales_rep                  # 担当者
 
     # 値引き（負の数で入力）
+    # G18は毎回必ず上書きする：テンプレート側にサンプル値（元案件の値引き
+    # -7015 等）が残存していても素通りさせないため。値引き0円のときは空欄。
     if discount:
         ws_quote["G18"] = discount if discount <= 0 else -abs(discount)
+    else:
+        ws_quote["G18"] = None
 
     # 見積書シート B5 サンプル値クリア（テンプレートに「吉田」が残存するため）
     ws_quote["B5"] = None
@@ -175,6 +179,16 @@ def fill_standard_template(
             if not existing_spec:
                 ws_naiyaku.cell(row=row_num, column=3).value = spec
 
+        # G列（金額）: アプリ側で円単位に丸め済みの明細金額を整数値で書き込む。
+        # テンプレートの生値数式（=D×F）のままだと小数点以下が丸められずに
+        # 合計され、明細ごとに丸めるアプリ画面の小計と1円単位のずれが出るため、
+        # 画面・保存データ・Excelの完全一致を優先して確定値を書き込む。
+        # （PythonとExcelの丸め規則統一による数式復活は別タスクで扱う）
+        amount = item.get("amount")
+        if amount is None:
+            amount = round(float(qty) * float(unit_price))
+        ws_naiyaku.cell(row=row_num, column=7).value = int(amount)  # G列: 金額
+
     # 行31（軒天塗装 玄関・バルコニー㎡）: soffit_entrance_sqm + soffit_balcony_sqm を合算して書き込む
     # MAPPINGで行30に先行マッチするため、専用ロジックで書き込む
     entrance_qty = next(
@@ -186,6 +200,16 @@ def fill_standard_template(
     combined_31 = round((entrance_qty or 0.0) + (balcony_qty or 0.0), 2)
     if combined_31 > 0:
         ws_naiyaku.cell(row=31, column=4).value = combined_31  # D31: ㎡合算値
+        # G31（金額）もアプリ側の丸め済み明細金額の合算値を整数で書き込む。
+        # アプリの小計は「明細ごとに丸めた金額の和」なので、玄関庇・ベランダ
+        # それぞれの丸め済みamountを足す（合算㎡×単価を再計算・再丸めしない）
+        entrance_amt = next(
+            (i.get("amount", 0) for i in items if "軒天塗装（玄関庇）" in i.get("item_name", "")), 0
+        ) or 0
+        balcony_amt = next(
+            (i.get("amount", 0) for i in items if "軒天塗装（ベランダ）" in i.get("item_name", "")), 0
+        ) or 0
+        ws_naiyaku.cell(row=31, column=7).value = int(entrance_amt + balcony_amt)  # G31: 金額
     # combined_31 == 0 の場合は None のまま（事前クリア済みで空欄）
 
     wb.save(output_path)
